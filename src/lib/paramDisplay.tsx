@@ -65,9 +65,7 @@ export function ActualValueBadge({ value, className = '', variant = 'highlight' 
 
 export function getParamDisplay(task: TaskRecord, paramKey: ParamKey, actualParams = task.actualParams) {
   const requestedValue = task.params[paramKey]
-  const actualValue = paramKey === 'n' && task.outputImages?.length > 0
-    ? task.outputImages.length
-    : actualParams?.[paramKey]
+  const actualValue = actualParams?.[paramKey]
   const hasActualValue = actualValue !== undefined && actualValue !== null
   const displayValue = hasActualValue ? actualValue : requestedValue
   const isMismatch =

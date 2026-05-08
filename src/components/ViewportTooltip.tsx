@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 interface ViewportTooltipProps {
   visible: boolean
@@ -7,47 +8,84 @@ interface ViewportTooltipProps {
 }
 
 export default function ViewportTooltip({ visible, children, className = '' }: ViewportTooltipProps) {
+  const anchorRef = useRef<HTMLSpanElement>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
-  const [offsetX, setOffsetX] = useState(0)
+  const [position, setPosition] = useState<{
+    left: number
+    top: number
+    arrowLeft: number
+    placement: 'top' | 'bottom'
+  } | null>(null)
 
   useEffect(() => {
     if (!visible) {
-      setOffsetX(0)
+      setPosition(null)
       return
     }
 
     const updatePosition = () => {
+      const anchor = anchorRef.current?.parentElement
       const el = tooltipRef.current
-      if (!el) return
+      if (!anchor || !el) return
+
       const margin = 8
-      const rect = el.getBoundingClientRect()
-      if (rect.left < margin) {
-        setOffsetX(margin - rect.left)
-      } else if (rect.right > window.innerWidth - margin) {
-        setOffsetX(window.innerWidth - margin - rect.right)
-      } else {
-        setOffsetX(0)
+      const gap = 8
+      const anchorRect = anchor.getBoundingClientRect()
+      if (!anchor.getClientRects().length || (anchorRect.width === 0 && anchorRect.height === 0)) {
+        setPosition(null)
+        return
       }
+
+      const tooltipRect = el.getBoundingClientRect()
+      const anchorCenter = anchorRect.left + anchorRect.width / 2
+      const maxLeft = Math.max(margin, window.innerWidth - tooltipRect.width - margin)
+      const left = Math.min(Math.max(anchorCenter - tooltipRect.width / 2, margin), maxLeft)
+      const aboveTop = anchorRect.top - tooltipRect.height - gap
+      const placement = aboveTop >= margin ? 'top' : 'bottom'
+      const top = placement === 'top' ? aboveTop : anchorRect.bottom + gap
+
+      setPosition({
+        left,
+        top,
+        arrowLeft: anchorCenter - left,
+        placement,
+      })
     }
 
     updatePosition()
     window.addEventListener('resize', updatePosition)
-    return () => window.removeEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
   }, [visible, children])
 
-  if (!visible) return null
-
   return (
-    <div
-      ref={tooltipRef}
-      className={`absolute bottom-full left-1/2 mb-2 pointer-events-none z-20 rounded-lg bg-gray-800 px-3 py-2 text-xs font-normal text-white shadow-lg ${className}`}
-      style={{ transform: `translateX(calc(-50% + ${offsetX}px))` }}
-    >
-      {children}
-      <div
-        className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-800"
-        style={{ marginLeft: -offsetX }}
-      />
-    </div>
+    <>
+      <span ref={anchorRef} className="hidden" aria-hidden />
+      {visible && createPortal(
+        <div
+          ref={tooltipRef}
+          className={`fixed pointer-events-none rounded-lg bg-gray-800 px-3 py-2 text-xs font-normal text-white shadow-lg ${className}`}
+          style={{
+            left: position?.left ?? 0,
+            top: position?.top ?? 0,
+            visibility: position ? 'visible' : 'hidden',
+            zIndex: 120,
+          }}
+        >
+          {children}
+          <div
+            className={`absolute left-0 border-4 border-transparent ${position?.placement === 'bottom' ? 'bottom-full border-b-gray-800' : 'top-full border-t-gray-800'}`}
+            style={{
+              left: position?.arrowLeft ?? 0,
+              transform: 'translateX(-50%)',
+            }}
+          />
+        </div>,
+        document.body,
+      )}
+    </>
   )
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { calculateImageSize, normalizeImageSize, parseRatio, type SizeTier } from '../lib/size'
+import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import ViewportTooltip from './ViewportTooltip'
 
 const TIERS: SizeTier[] = ['1K', '2K', '4K']
@@ -19,6 +20,7 @@ interface Props {
   currentSize: string
   onSelect: (size: string) => void
   onClose: () => void
+  allowAuto?: boolean
 }
 
 type Mode = 'auto' | 'ratio' | 'resolution'
@@ -41,18 +43,20 @@ function findPresetForSize(size: string) {
   return null
 }
 
-export default function SizePickerModal({ currentSize, onSelect, onClose }: Props) {
+export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true }: Props) {
+  usePreventBackgroundScroll(true)
+
   const currentPreset = findPresetForSize(currentSize)
   const currentParsedSize = parseSize(currentSize)
   const [mode, setMode] = useState<Mode>(() => {
-    if (!currentSize || currentSize === 'auto') return 'auto'
+    if (!currentSize || currentSize === 'auto') return allowAuto ? 'auto' : 'ratio'
     if (currentPreset) return 'ratio'
     return 'resolution'
   })
 
   // Ratio mode state
   const [tier, setTier] = useState<SizeTier>(currentPreset?.tier ?? '1K')
-  const [ratio, setRatio] = useState(currentPreset?.ratio ?? '1:1')
+  const [ratio, setRatio] = useState(currentPreset?.ratio ?? (allowAuto ? '1:1' : '4:3'))
   const [customRatio, setCustomRatio] = useState('16:9')
 
   // Resolution mode state
@@ -164,12 +168,14 @@ export default function SizePickerModal({ currentSize, onSelect, onClose }: Prop
 
         <div className="space-y-6">
           <div className="flex rounded-xl bg-gray-100/80 p-1 dark:bg-white/[0.04]">
-            <button
-              onClick={() => setMode('auto')}
-              className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'auto' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
-            >
-              自动
-            </button>
+            {allowAuto && (
+              <button
+                onClick={() => setMode('auto')}
+                className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'auto' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
+              >
+                自动
+              </button>
+            )}
             <button
               onClick={() => setMode('ratio')}
               className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'ratio' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}

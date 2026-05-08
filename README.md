@@ -68,7 +68,7 @@
 - **极致性能与隐私**：所有记录与图片均存放在浏览器 IndexedDB 中（采用 SHA-256 去重压缩），不经过任何第三方服务器。支持一键打包导出 ZIP 备份。
 
 ### 🔌 API 兼容增强
-- **Codex CLI 兼容模式**：专为非标准 API (如 Codex CLI) 打造。开启后自动固定无效参数，将 Images API 的多图请求拆分为并发单图。
+- **Codex CLI 兼容模式**：专为非标准 API (如 Codex CLI) 打造。开启后应用 Codex CLI 实际支持的参数，将 Images API 的多图请求拆分为并发单图。
 - **提示词防改写**：Responses API 会始终在请求文本前加入强制指令防止提示词被改写；开启 Codex CLI 模式后，Images API 也会获得同等保护。
 
 ---
@@ -98,7 +98,40 @@
 </details>
 
 <details>
-<summary><strong>🐳 方式二：Docker 部署</strong></summary>
+<summary><strong>☁️ 方式二：Cloudflare Workers 部署</strong></summary>
+
+项目已内置 Wrangler 配置，可将 Vite 构建产物作为 Cloudflare Workers 静态资源部署。
+
+**1. 登录 Cloudflare**
+
+```bash
+npx wrangler login
+```
+
+**2. 部署到 Workers**
+
+```bash
+npm run deploy:cf
+```
+
+部署脚本会先执行 `npm run build`，再通过 `wrangler deploy` 上传 `dist/` 目录。
+
+**配置默认 API URL**：Cloudflare Workers 的环境变量不会自动改写已经构建好的静态文件。若需预设默认 API 地址，请在构建前设置 `VITE_DEFAULT_API_URL` 后再部署。
+
+```bash
+VITE_DEFAULT_API_URL=https://api.openai.com/v1 npm run deploy:cf
+```
+
+PowerShell 示例：
+
+```powershell
+$env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
+```
+
+</details>
+
+<details>
+<summary><strong>🐳 方式三：Docker 部署</strong></summary>
 
 官方镜像已发布至 GitHub Container Registry。Docker 部署支持在运行时注入默认配置。
 
@@ -145,7 +178,7 @@ services:
 </details>
 
 <details>
-<summary><strong>💻 方式三：本地开发与静态构建</strong></summary>
+<summary><strong>💻 方式四：本地开发与静态构建</strong></summary>
 
 **1. 环境准备与启动**
 
@@ -184,27 +217,90 @@ npm run build
 
 - **双接口模式**：支持 `Images API` (需填写 GPT Image 模型，如 `gpt-image-2`) 和 `Responses API` (需填写支持该工具的文本模型，如 `gpt-5.5`)。
 - **API 代理**：开启后，浏览器将请求同源的 `/api-proxy/` 路径，交由当前部署环境（Docker 或 本地开发）代理转发至真实 API，以绕开浏览器 CORS 限制。
-- **Codex CLI 模式**：如果你在使用源于 Codex CLI 的 API，可以在 `API URL` 右侧开启该模式。开启后会禁用不支持的 `quality` 参数，Images API 的多图生成也将改为并发单图请求。此外，提示词文本开头会加入简短的防改写指令，防止模型偏离原意。（注：Responses API 无论是否开启此模式，都会默认加入防改写指令）。
+- **习惯配置**：支持设置提交任务后是否清空输入框，以及重启后是否加载上次的输入框。关闭“重启后加载上次的输入框”后，将不再持久化提示词和参考图。
+- **Codex CLI 兼容模式**：如果你在使用源于 Codex CLI 的 API，可以开启该模式。开启后应用 Codex CLI 实际支持的参数，Images API 的多图生成也将改为并发单图请求。此外，提示词文本开头会加入简短的防改写指令，防止模型偏离原意。（注：Responses API 无论是否开启此模式，都会默认加入防改写指令）。
 - **智能诊断提示**：当应用检测到接口返回的提示词被强制改写，或缺少官方 API 常规返回的参数时，会主动提示你是否针对当前配置组合开启 Codex CLI 模式。
 
 ### URL 传参快速填充
 
-应用支持通过 URL 查询参数快速填入配置，非常适合创建书签或集成分享：
+应用支持通过 URL 查询参数快速填入配置，非常适合创建书签或集成分享。根据你的服务商类型，选择对应的方式：
 
+**方式一：标准 OpenAI 兼容服务商**
+直接使用简短的查询参数配置：
 - `?apiUrl=https://你的代理地址.com`
 - `?apiKey=sk-xxxx`
 - `?apiMode=images` 或 `?apiMode=responses`（未传时默认为 `images`）
-- `?codexCli=true`（强制开启 Codex CLI 模式）
+- `?model=gpt-image-2`（未传时按 `apiMode` 使用默认模型）
+- `?codexCli=true`（开启 Codex CLI 兼容模式）
 
 例如，集成到 New API 的聊天系统：
 
 ```text
-https://gpt-image-playground.cooksleep.dev?apiUrl={address}&apiKey={key}
+https://gpt-image-playground.cooksleep.dev?apiUrl={address}&apiKey={key}&model={model}
 ```
 
 ```text
-https://cooksleep.github.io/gpt_image_playground?apiUrl={address}&apiKey={key}
+https://cooksleep.github.io/gpt_image_playground?apiUrl={address}&apiKey={key}&model={model}
 ```
+
+**方式二：自定义格式服务商**
+如果需要导入自定义格式的 API 配置，请使用 `settings` 参数并传入 URL 编码后的完整 JSON：
+- `?settings={URL编码后的JSON}`（只读取 `customProviders` 和 `profiles` 列表）
+
+> 推荐在项目内的 **设置 - API 配置 - 服务商类型 - 创建自定义服务商 - AI 一键生成与导入** 完成配置生成与导入后，在 **API 配置 - 当前配置 - 复制icon** 处一键复制可导入配置的 URL（可选择不包含 API key）
+
+JSON 结构示例：
+
+```json
+{
+  "customProviders": [
+    {
+      "id": "custom-example-task",
+      "name": "示例异步任务服务商",
+      "submit": {
+        "path": "images/generations",
+        "method": "POST",
+        "contentType": "json",
+        "body": {
+          "model": "$profile.model",
+          "prompt": "$prompt",
+          "size": "$params.size",
+          "quality": "$params.quality",
+          "output_format": "$params.output_format",
+          "output_compression": "$params.output_compression",
+          "n": "$params.n",
+          "image_urls": "$inputImages.dataUrls"
+        },
+        "taskIdPath": "data.0.task_id"
+      },
+      "poll": {
+        "path": "tasks/{task_id}",
+        "method": "GET",
+        "intervalSeconds": 5,
+        "statusPath": "data.status",
+        "successValues": ["completed"],
+        "failureValues": ["failed", "cancelled"],
+        "errorPath": "data.error.message",
+        "result": {
+          "imageUrlPaths": ["data.result.images.*.url.*"],
+          "b64JsonPaths": []
+        }
+      }
+    }
+  ],
+  "profiles": [
+    {
+      "name": "示例异步任务服务商",
+      "provider": "custom-example-task",
+      "baseUrl": "https://api.example.com/v1",
+      "model": "example-image-model",
+      "apiMode": "images"
+    }
+  ]
+}
+```
+
+第三方服务商可以参考 [自定义服务商 LLM 提示词](docs/custom-provider-llm-prompt.md)，让 LLM 根据自己的 API 文档生成可导入的完整配置。导入后只需要在设置里补充 API Key。
 
 ---
 
