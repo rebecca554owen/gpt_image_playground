@@ -20,6 +20,8 @@ export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
+export const DEFAULT_CUSTOM_PROVIDER_ID = 'custom-default'
+export const DEFAULT_CUSTOM_PROFILE_ID = 'custom-default-profile'
 export const DEFAULT_API_TIMEOUT = 600
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
@@ -47,6 +49,29 @@ const DEFAULT_EDIT_FILES: CustomProviderFileMapping[] = [
   { field: 'image[]', source: 'inputImages', array: true },
   { field: 'mask', source: 'mask' },
 ]
+
+function createDefaultCustomProvider(): CustomProviderDefinition {
+  return {
+    id: DEFAULT_CUSTOM_PROVIDER_ID,
+    name: '默认服务商',
+    template: 'http-image',
+    submit: {
+      path: DEFAULT_CUSTOM_PROVIDER_PATHS.generationPath,
+      method: 'POST',
+      contentType: 'json',
+      body: DEFAULT_GENERATE_BODY,
+      result: DEFAULT_OPENAI_RESULT,
+    },
+    editSubmit: {
+      path: DEFAULT_CUSTOM_PROVIDER_PATHS.editPath,
+      method: 'POST',
+      contentType: 'multipart',
+      body: DEFAULT_EDIT_BODY,
+      files: DEFAULT_EDIT_FILES,
+      result: DEFAULT_OPENAI_RESULT,
+    },
+  }
+}
 
 function isCustomProviderTemplate(value: unknown): value is CustomProviderTemplate {
   return value === 'http-image'
@@ -284,6 +309,22 @@ export function createDefaultFalProfile(overrides: Partial<ApiProfile> = {}): Ap
   }
 }
 
+function createDefaultCustomProfile(providerId: string, overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return {
+    id: DEFAULT_CUSTOM_PROFILE_ID,
+    name: '默认配置',
+    provider: providerId,
+    baseUrl: DEFAULT_BASE_URL,
+    apiKey: '',
+    model: DEFAULT_IMAGES_MODEL,
+    timeout: DEFAULT_API_TIMEOUT,
+    apiMode: 'images',
+    codexCli: false,
+    apiProxy: false,
+    ...overrides,
+  }
+}
+
 export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvider, customProvider?: CustomProviderDefinition): ApiProfile {
   if (provider === 'fal') {
     return {
@@ -493,9 +534,9 @@ export function validateApiProfile(profile: ApiProfile): string | null {
 }
 
 function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
-  return profile.id === DEFAULT_OPENAI_PROFILE_ID &&
-    profile.name === '默认' &&
-    profile.provider === 'openai' &&
+  return profile.id === DEFAULT_CUSTOM_PROFILE_ID &&
+    profile.name === '默认配置' &&
+    profile.provider === DEFAULT_CUSTOM_PROVIDER_ID &&
     profile.baseUrl === DEFAULT_BASE_URL &&
     profile.apiKey === '' &&
     profile.model === DEFAULT_IMAGES_MODEL &&
@@ -506,9 +547,10 @@ function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
 }
 
 function hasOnlyDefaultProfiles(settings: AppSettings): boolean {
-  return settings.customProviders.length === 0 &&
+  return settings.customProviders.length === 1 &&
+    settings.customProviders[0].id === DEFAULT_CUSTOM_PROVIDER_ID &&
     settings.profiles.length === 1 &&
-    settings.activeProfileId === DEFAULT_OPENAI_PROFILE_ID &&
+    settings.activeProfileId === DEFAULT_CUSTOM_PROFILE_ID &&
     isDefaultOpenAIProfile(settings.profiles[0])
 }
 
@@ -657,7 +699,9 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   apiMode: 'images',
   codexCli: false,
   apiProxy: false,
-  customProviders: [],
+  customProviders: [createDefaultCustomProvider()],
+  profiles: [createDefaultCustomProfile(DEFAULT_CUSTOM_PROVIDER_ID)],
+  activeProfileId: DEFAULT_CUSTOM_PROFILE_ID,
   clearInputAfterSubmit: false,
   persistInputOnRestart: true,
   reuseTaskApiProfileTemporarily: false,

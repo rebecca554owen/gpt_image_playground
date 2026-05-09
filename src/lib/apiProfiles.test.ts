@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_CUSTOM_PROFILE_ID,
+  DEFAULT_CUSTOM_PROVIDER_ID,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
@@ -357,6 +359,65 @@ describe('mergeImportedSettings', () => {
 })
 
 describe('custom providers', () => {
+  it('default settings expose a default custom provider and profile', () => {
+    expect(DEFAULT_SETTINGS.customProviders).toHaveLength(1)
+    expect(DEFAULT_SETTINGS.customProviders[0]).toMatchObject({
+      id: DEFAULT_CUSTOM_PROVIDER_ID,
+      name: '默认服务商',
+    })
+    expect(DEFAULT_SETTINGS.profiles.some((profile) => profile.id === DEFAULT_CUSTOM_PROFILE_ID)).toBe(true)
+    expect(DEFAULT_SETTINGS.activeProfileId).toBe(DEFAULT_CUSTOM_PROFILE_ID)
+  })
+
+  it('preserves hidden built-in profiles in normalized settings', () => {
+    const settings = normalizeSettings({
+      customProviders: [{
+        id: 'custom-json',
+        name: 'Custom JSON',
+        submit: { path: 'images/generations' },
+      }],
+      profiles: [
+        {
+          id: 'openai-profile',
+          name: 'OpenAI',
+          provider: 'openai',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'openai-key',
+          model: 'gpt-image-2',
+          timeout: 300,
+          apiMode: 'images',
+          codexCli: false,
+          apiProxy: false,
+        },
+        {
+          id: 'custom-profile',
+          name: 'Custom',
+          provider: 'custom-json',
+          baseUrl: 'https://custom.example.com/v1',
+          apiKey: 'custom-key',
+          model: 'gpt-image-2',
+          timeout: 300,
+          apiMode: 'images',
+          codexCli: false,
+          apiProxy: false,
+        },
+      ],
+      activeProfileId: 'openai-profile',
+    })
+
+    expect(settings.profiles.map((profile) => profile.id)).toEqual(['openai-profile', 'custom-profile'])
+    expect(settings.activeProfileId).toBe('openai-profile')
+  })
+
+  it('default settings keep a visible custom profile after removing built-in profiles from the UI flow', () => {
+    const visibleProfiles = DEFAULT_SETTINGS.profiles.filter((profile) =>
+      DEFAULT_SETTINGS.customProviders.some((provider) => provider.id === profile.provider),
+    )
+
+    expect(visibleProfiles).toHaveLength(1)
+    expect(visibleProfiles[0].provider).toBe(DEFAULT_SETTINGS.customProviders[0].id)
+  })
+
   it('normalizes custom provider definitions and keeps custom profiles', () => {
     const settings = normalizeSettings({
       customProviders: [{
