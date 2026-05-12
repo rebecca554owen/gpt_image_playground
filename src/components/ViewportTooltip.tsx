@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { onDismissTooltips } from '../lib/tooltipDismiss'
 
 interface ViewportTooltipProps {
   visible: boolean
@@ -17,8 +18,23 @@ export default function ViewportTooltip({ visible, children, className = '' }: V
     placement: 'top' | 'bottom'
   } | null>(null)
 
+  // Global dismiss: when any modal opens, suppress the tooltip even if
+  // the parent still passes visible=true.  Reset when visible goes back
+  // to false (so the next hover cycle works normally).
+  const [suppressed, setSuppressed] = useState(false)
+
   useEffect(() => {
     if (!visible) {
+      setSuppressed(false)
+      return
+    }
+    return onDismissTooltips(() => setSuppressed(true))
+  }, [visible])
+
+  const effectiveVisible = visible && !suppressed
+
+  useEffect(() => {
+    if (!effectiveVisible) {
       setPosition(null)
       return
     }
@@ -59,12 +75,12 @@ export default function ViewportTooltip({ visible, children, className = '' }: V
       window.removeEventListener('resize', updatePosition)
       window.removeEventListener('scroll', updatePosition, true)
     }
-  }, [visible, children])
+  }, [effectiveVisible, children])
 
   return (
     <>
       <span ref={anchorRef} className="hidden" aria-hidden />
-      {visible && createPortal(
+      {effectiveVisible && createPortal(
         <div
           ref={tooltipRef}
           className={`fixed pointer-events-none rounded-lg bg-gray-800 px-3 py-2 text-xs font-normal text-white shadow-lg ${className}`}

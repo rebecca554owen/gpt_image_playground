@@ -2,11 +2,15 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, updateTaskInStore, showCodexCliPrompt, getCodexCliPromptKey, retryTask } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
+import { useTooltip } from '../hooks/useTooltip'
 import { formatImageRatio } from '../lib/size'
 import { ActualValueBadge, DetailParamValue } from '../lib/paramDisplay'
 import { copyBlobToClipboard, copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
-import { CloseIcon, CopyIcon, EditIcon, TrashIcon } from './icons'
+import { dismissAllTooltips } from '../lib/tooltipDismiss'
+import { CloseIcon, CodeIcon, CopyIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
+
+import ViewportTooltip from './ViewportTooltip'
 
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
@@ -26,10 +30,27 @@ export default function DetailModal() {
   const [imageSizes, setImageSizes] = useState<Record<string, string>>({})
   const [maskPreviewSrc, setMaskPreviewSrc] = useState('')
   const [now, setNow] = useState(Date.now())
+  const [showRawUrlsModal, setShowRawUrlsModal] = useState(false)
+  const [showRawResponseModal, setShowRawResponseModal] = useState(false)
   const imagePanelRef = useRef<HTMLDivElement>(null)
   const mainImageRef = useRef<HTMLImageElement>(null)
   const modalRef = useRef<HTMLDivElement>(null)
+  const rawUrlsModalRef = useRef<HTMLDivElement>(null)
+  const rawResponseModalRef = useRef<HTMLDivElement>(null)
   const [imageLabelLeft, setImageLabelLeft] = useState(8)
+
+  const rawUrlsBackdropPointerDownRef = useRef(false)
+  const rawResponseBackdropPointerDownRef = useRef(false)
+
+  const copyErrorTooltip = useTooltip()
+  const copyRawUrlsTooltip = useTooltip()
+  const viewRawResponseTooltip = useTooltip()
+  const retryTooltip = useTooltip()
+
+  const clearTextSelection = () => {
+    const selection = window.getSelection()
+    if (selection && !selection.isCollapsed) selection.removeAllRanges()
+  }
 
   const task = useMemo(
     () => tasks.find((t) => t.id === detailTaskId) ?? null,
@@ -37,7 +58,7 @@ export default function DetailModal() {
   )
 
   useCloseOnEscape(Boolean(task), () => setDetailTaskId(null))
-  usePreventBackgroundScroll(Boolean(task), modalRef)
+  usePreventBackgroundScroll(Boolean(task), [modalRef, rawUrlsModalRef, rawResponseModalRef])
 
   // Reset index when task changes
   useEffect(() => {
@@ -173,6 +194,7 @@ export default function DetailModal() {
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
   const isCustomReconnecting = task.status === 'error' && task.customRecoverable
+  const rawImageUrls = task.rawImageUrls ?? []
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
@@ -408,7 +430,7 @@ export default function DetailModal() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <p
-                className="overflow-hidden text-sm leading-6 text-red-500 break-all"
+                className="overflow-hidden whitespace-pre-line text-sm leading-6 text-red-500 break-words"
                 style={{
                   display: '-webkit-box',
                   WebkitBoxOrient: 'vertical',
@@ -418,26 +440,90 @@ export default function DetailModal() {
                 {task.error || '生成失败'}
               </p>
               <div className="mt-3 flex items-center justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleCopyError}
-                  className="inline-flex items-center justify-center rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10"
-                  aria-label="复制完整报错"
-                  title="复制完整报错"
-                >
-                  <CopyIcon className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRetry}
-                  className="inline-flex items-center justify-center rounded-full border border-blue-200/80 bg-white/80 px-3 py-1.5 text-blue-500 transition hover:bg-blue-50 dark:border-blue-400/20 dark:bg-white/[0.04] dark:hover:bg-blue-500/10"
-                  aria-label="重试任务"
-                  title="重试任务"
-                >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                </button>
+                <div className="relative group">
+                  <button
+                    type="button"
+                    {...copyErrorTooltip.handlers}
+                    onClick={(e) => {
+                      copyErrorTooltip.handlers.onClick()
+                      handleCopyError()
+                    }}
+                    className="inline-flex items-center justify-center rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10"
+                    aria-label="复制完整报错"
+                  >
+                    <CopyIcon className="h-4 w-4" />
+                  </button>
+                  <ViewportTooltip visible={copyErrorTooltip.visible} className="whitespace-nowrap">
+                    复制完整报错
+                  </ViewportTooltip>
+                </div>
+                {task.rawResponsePayload && (
+                  <div className="relative group">
+                    <button
+                      type="button"
+                      {...viewRawResponseTooltip.handlers}
+                      onClick={(e) => {
+                        dismissAllTooltips()
+                        setShowRawResponseModal(true)
+                      }}
+                      className="inline-flex items-center justify-center rounded-full border border-purple-200/80 bg-purple-50 px-3 py-1.5 text-purple-600 transition hover:bg-purple-100 dark:border-purple-500/20 dark:bg-purple-500/10 dark:text-purple-400 dark:hover:bg-purple-500/20"
+                      aria-label="查看原始响应"
+                    >
+                      <CodeIcon className="h-4 w-4" />
+                    </button>
+                    <ViewportTooltip visible={viewRawResponseTooltip.visible} className="whitespace-nowrap">
+                      查看原始响应
+                    </ViewportTooltip>
+                  </div>
+                )}
+                {task.rawImageUrls && task.rawImageUrls.length > 0 && (
+                  <div className="relative group">
+                    <button
+                      type="button"
+                      {...copyRawUrlsTooltip.handlers}
+                      onClick={async (e) => {
+                        if (task.rawImageUrls!.length === 1) {
+                          copyRawUrlsTooltip.handlers.onClick()
+                          try {
+                            await copyTextToClipboard(task.rawImageUrls![0])
+                            showToast('图片链接已复制', 'success')
+                          } catch (err) {
+                            showToast(getClipboardFailureMessage('复制链接失败', err), 'error')
+                          }
+                        } else {
+                          dismissAllTooltips()
+                          setShowRawUrlsModal(true)
+                        }
+                      }}
+                      className="inline-flex items-center justify-center rounded-full border border-green-200/80 bg-green-50 px-3 py-1.5 text-green-600 transition hover:bg-green-100 dark:border-green-500/20 dark:bg-green-500/10 dark:text-green-400 dark:hover:bg-green-500/20"
+                      aria-label="复制图片链接"
+                    >
+                      <LinkIcon className="h-4 w-4" />
+                    </button>
+                    <ViewportTooltip visible={copyRawUrlsTooltip.visible} className="whitespace-nowrap">
+                      复制图片链接
+                    </ViewportTooltip>
+                  </div>
+                )}
+                <div className="relative group">
+                  <button
+                    type="button"
+                    {...retryTooltip.handlers}
+                    onClick={(e) => {
+                      retryTooltip.handlers.onClick()
+                      handleRetry()
+                    }}
+                    className="inline-flex items-center justify-center rounded-full border border-blue-200/80 bg-white/80 px-3 py-1.5 text-blue-500 transition hover:bg-blue-50 dark:border-blue-400/20 dark:bg-white/[0.04] dark:hover:bg-blue-500/10"
+                    aria-label="重试任务"
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                  <ViewportTooltip visible={retryTooltip.visible} className="whitespace-nowrap">
+                    重试任务
+                  </ViewportTooltip>
+                </div>
               </div>
             </div>
           )}
@@ -638,6 +724,138 @@ export default function DetailModal() {
           </div>
         </div>
       </div>
+
+      {showRawUrlsModal && rawImageUrls.length > 0 && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm sm:p-6"
+          onPointerDown={(e) => {
+            rawUrlsBackdropPointerDownRef.current = e.target === e.currentTarget
+          }}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (rawUrlsBackdropPointerDownRef.current && e.target === e.currentTarget) setShowRawUrlsModal(false)
+            rawUrlsBackdropPointerDownRef.current = false
+          }}
+        >
+          <div ref={rawUrlsModalRef} className="flex w-full max-w-2xl max-h-[90vh] flex-col overflow-hidden rounded-2xl bg-white shadow-xl dark:bg-[#1c1c1e]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-white/[0.08] shrink-0">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-white">原始图片链接 ({rawImageUrls.length})</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await copyTextToClipboard(rawImageUrls.join('\n'))
+                      showToast('复制成功', 'success')
+                    } catch (err) {
+                      showToast(getClipboardFailureMessage('复制失败', err), 'error')
+                    }
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.08] transition-colors text-xs font-medium"
+                >
+                  <CopyIcon className="w-3.5 h-3.5" />
+                  全部复制
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRawUrlsModal(false)}
+                  className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-500 dark:hover:bg-white/[0.08] dark:hover:text-gray-300 transition-colors"
+                >
+                  <CloseIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-5 bg-gray-50/50 dark:bg-black/20 overscroll-contain">
+              <div className="space-y-2.5">
+                {rawImageUrls.map((url, i) => (
+                  <div key={i} className="group flex items-center gap-3 p-3 sm:p-4 rounded-xl bg-white dark:bg-[#1c1c1e] border border-gray-100 dark:border-white/[0.06] shadow-sm hover:shadow-md transition-all">
+                    <div className="flex-1 min-w-0 flex flex-col gap-1">
+                      <div className="text-xs font-medium text-gray-400 dark:text-gray-500">
+                        图片 {i + 1}
+                      </div>
+                      <div className="text-sm text-gray-700 dark:text-gray-300 truncate select-text" title={url}>
+                        {url}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await copyTextToClipboard(url)
+                          showToast('复制成功', 'success')
+                        } catch (err) {
+                          showToast(getClipboardFailureMessage('复制失败', err), 'error')
+                        }
+                      }}
+                      className="flex-shrink-0 p-2 sm:px-3 sm:py-1.5 flex items-center justify-center gap-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.08] transition-colors text-xs font-medium border border-transparent dark:border-white/[0.04]"
+                      title="复制链接"
+                    >
+                      <CopyIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                      <span className="hidden sm:inline">复制</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRawResponseModal && task?.rawResponsePayload && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm sm:p-6"
+          onPointerDown={(e) => {
+            rawResponseBackdropPointerDownRef.current = e.target === e.currentTarget
+          }}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (rawResponseBackdropPointerDownRef.current && e.target === e.currentTarget) setShowRawResponseModal(false)
+            rawResponseBackdropPointerDownRef.current = false
+          }}
+        >
+          <div
+            ref={rawResponseModalRef}
+            className="flex w-full max-w-3xl max-h-[90vh] flex-col overflow-hidden rounded-2xl bg-white shadow-xl dark:bg-[#1c1c1e]"
+            onPointerDown={(e) => {
+              if (!(e.target as Element).closest('[data-selectable-text]')) clearTextSelection()
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-white/[0.08] shrink-0">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-white">原始响应数据</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await copyTextToClipboard(task.rawResponsePayload!)
+                      showToast('复制成功', 'success')
+                    } catch (err) {
+                      showToast(getClipboardFailureMessage('复制失败', err), 'error')
+                    }
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.08] transition-colors text-xs font-medium"
+                >
+                  <CopyIcon className="w-3.5 h-3.5" />
+                  全部复制
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRawResponseModal(false)}
+                  className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-500 dark:hover:bg-white/[0.08] dark:hover:text-gray-300 transition-colors"
+                >
+                  <CloseIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-5 bg-gray-50/50 dark:bg-black/20 overscroll-contain">
+              <pre data-selectable-text className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 font-mono whitespace-pre-wrap break-all select-text">
+                {task.rawResponsePayload.replace(/"(b64_json|base64|data)":\s*"[^"]+"/g, '"$1": "<base64_data>"')}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

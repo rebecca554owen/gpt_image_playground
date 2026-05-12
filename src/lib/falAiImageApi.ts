@@ -1,5 +1,6 @@
 import { fal } from '@fal-ai/client'
 import type { ApiProfile, FalApiResponse, TaskParams } from '../types'
+import { DEFAULT_FAL_BASE_URL } from './apiProfiles'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
@@ -36,10 +37,13 @@ function mapFalQuality(quality: TaskParams['quality']): 'low' | 'medium' | 'high
 }
 
 function configureFal(profile: ApiProfile) {
-  fal.config({
+  const baseUrl = profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
+  const config: Parameters<typeof fal.config>[0] = {
     credentials: profile.apiKey,
     suppressLocalCredentialsWarning: true,
-  })
+  }
+  if (baseUrl !== DEFAULT_FAL_BASE_URL) config.proxyUrl = baseUrl
+  fal.config(config)
 }
 
 async function createFalRequestInput(opts: CallApiOptions): Promise<Record<string, unknown>> {
@@ -87,38 +91,61 @@ function readFalImageSize(value: unknown): Partial<TaskParams> | undefined {
   return { size: `${Math.round(width)}x${Math.round(height)}` }
 }
 
-async function parseFalImageResults(payload: FalApiResponse, fallbackMime: string, signal?: AbortSignal): Promise<Array<{
+async function parseFalImageResults(payload: FalApiResponse, fallbackMime: string, customBaseUrlLabel: string | null, signal?: AbortSignal): Promise<Array<{
   image: string
   actualParams?: Partial<TaskParams>
+  rawImageUrl?: string
 }>> {
   const candidates: unknown[] = []
   if (Array.isArray(payload.images)) candidates.push(...payload.images)
   if (payload.image) candidates.push(payload.image)
   if (payload.url) candidates.push(payload.url)
 
-  const results: Array<{ image: string; actualParams?: Partial<TaskParams> }> = []
-  for (const candidate of candidates) {
-    const value = readFalImageValue(candidate, fallbackMime)
-    if (!value) continue
-    results.push({
-      image: isHttpUrl(value) ? await fetchImageUrlAsDataUrl(value, fallbackMime, signal) : value,
-      actualParams: readFalImageSize(candidate),
-    })
+  const results: Array<{ image: string; actualParams?: Partial<TaskParams>; rawImageUrl?: string }> = []
+  const rawImageUrls: string[] = []
+  try {
+    for (const candidate of candidates) {
+      const value = readFalImageValue(candidate, fallbackMime)
+      if (!value) continue
+      if (isHttpUrl(value)) rawImageUrls.push(value)
+      results.push({
+        image: isHttpUrl(value) ? await fetchImageUrlAsDataUrl(value, fallbackMime, signal) : value,
+        actualParams: readFalImageSize(candidate),
+        rawImageUrl: isHttpUrl(value) ? value : undefined,
+      })
+    }
+  } catch (err) {
+    if (rawImageUrls.length > 0 && err instanceof Error) {
+      (err as any).rawImageUrls = rawImageUrls
+    }
+    throw err
   }
 
-  if (!results.length) throw new Error('fal.ai 未返回可用图片数据')
+  if (!results.length) {
+    const err = new Error(
+      customBaseUrlLabel
+        ? `${customBaseUrlLabel} 没有返回可识别的图片数据，请查看原始响应内容确认实际返回的数据结构。如果当前接口与 fal.ai 格式不兼容，建议创建并使用「自定义服务商」配置。`
+        : 'fal.ai 未返回可用图片数据',
+    )
+    if (customBaseUrlLabel) {
+      ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    }
+    throw err
+  }
   return results
 }
 
-async function parseFalResult(payload: FalApiResponse, params: TaskParams, signal?: AbortSignal): Promise<CallApiResult> {
+async function parseFalResult(payload: FalApiResponse, params: TaskParams, customBaseUrlLabel: string | null, signal?: AbortSignal): Promise<CallApiResult> {
   const mime = MIME_MAP[params.output_format] || 'image/png'
-  const imageResults = await parseFalImageResults(payload, mime, signal)
+  const imageResults = await parseFalImageResults(payload, mime, customBaseUrlLabel, signal)
   const actualParams = mergeActualParams(imageResults[0]?.actualParams)
+  const rawImageUrls = imageResults.map((r) => r.rawImageUrl).filter((u): u is string => Boolean(u))
   return {
     images: imageResults.map((result) => result.image),
     actualParams,
     actualParamsList: imageResults.map((result) => result.actualParams),
     revisedPrompts: imageResults.map(() => undefined),
+    ...(rawImageUrls.length ? { rawImageUrls } : {}),
   }
 }
 
@@ -147,6 +174,12 @@ export function getFalErrorMessage(err: unknown): string | null {
   return typeof message === 'string' && message.trim() ? message : null
 }
 
+function getFalCustomBaseUrlLabel(profile: ApiProfile): string | null {
+  const base = profile.baseUrl.trim().replace(/\/+$/, '')
+  if (!base || base === DEFAULT_FAL_BASE_URL) return null
+  return base.replace(/^https?:\/\//, '')
+}
+
 export async function getFalQueuedImageResult(
   profile: ApiProfile,
   endpoint: string,
@@ -156,7 +189,7 @@ export async function getFalQueuedImageResult(
   configureFal(profile)
   await fal.queue.subscribeToStatus(endpoint, { requestId, logs: true })
   const result = await fal.queue.result(endpoint, { requestId })
-  return parseFalResult(result.data as FalApiResponse, params)
+  return parseFalResult(result.data as FalApiResponse, params, getFalCustomBaseUrlLabel(profile))
 }
 
 export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
@@ -185,7 +218,7 @@ export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfil
     })
     const payload = result.data as FalApiResponse
     opts.onFalRequestEnqueued?.({ requestId: result.requestId, endpoint })
-    return parseFalResult(payload, opts.params)
+    return parseFalResult(payload, opts.params, getFalCustomBaseUrlLabel(profile))
   } catch (err) {
     const falMessage = getFalErrorMessage(err)
     if (falMessage) throw new Error(falMessage)

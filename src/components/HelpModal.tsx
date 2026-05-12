@@ -82,7 +82,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                   批量操作
                 </h4>
                 <div className="space-y-4">
-                  <p>选中一条或多条记录后，页面底部会出现操作栏，支持<strong className="text-yellow-500 dark:text-yellow-400 font-medium">批量收藏</strong>、<strong className="text-red-500 dark:text-red-400 font-medium">批量删除</strong>，或<strong className="text-blue-500 dark:text-blue-400 font-medium">全选当前可见记录</strong>。</p>
+                  <p>选中一条或多条记录后，页面底部会出现操作栏，支持<strong className="text-gray-500 dark:text-gray-400 font-medium">取消选择</strong>、<strong className="text-blue-500 dark:text-blue-400 font-medium">全选当前可见记录</strong>、<strong className="text-yellow-500 dark:text-yellow-400 font-medium">批量收藏</strong>、<strong className="text-green-500 dark:text-green-400 font-medium">批量下载</strong>，和<strong className="text-red-500 dark:text-red-400 font-medium">批量删除</strong>。</p>
                 </div>
               </section>
             </>
@@ -112,7 +112,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
                   批量操作
                 </h4>
                 <div className="space-y-4">
-                  <p>选中一条或多条记录后，页面底部会出现操作栏，支持<strong className="text-yellow-500 dark:text-yellow-400 font-medium">批量收藏</strong>、<strong className="text-red-500 dark:text-red-400 font-medium">批量删除</strong>，或<strong className="text-blue-500 dark:text-blue-400 font-medium">全选当前可见记录</strong>。</p>
+                  <p>选中一条或多条记录后，页面底部会出现操作栏，支持<strong className="text-gray-500 dark:text-gray-400 font-medium">取消选择</strong>、<strong className="text-blue-500 dark:text-blue-400 font-medium">全选当前可见记录</strong>、<strong className="text-yellow-500 dark:text-yellow-400 font-medium">批量收藏</strong>、<strong className="text-green-500 dark:text-green-400 font-medium">批量下载</strong>，和<strong className="text-red-500 dark:text-red-400 font-medium">批量删除</strong>。</p>
                 </div>
               </section>
             </>

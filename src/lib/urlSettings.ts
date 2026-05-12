@@ -100,7 +100,6 @@ export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings>
       name: 'URL 参数配置',
       apiMode: profileApiMode,
       model: profileApiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL,
-      apiProxy: false,
     })
     if (apiUrlParam !== null) profile.baseUrl = normalizeBaseUrl(apiUrlParam.trim())
     if (apiKeyParam !== null) profile.apiKey = apiKeyParam.trim()

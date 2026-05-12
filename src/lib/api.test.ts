@@ -1,7 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { DEFAULT_SETTINGS } from './apiProfiles'
+import { DEFAULT_SETTINGS, createDefaultOpenAIProfile } from './apiProfiles'
 import { callImageApi } from './api'
+
+const createOpenAISettings = (overrides = {}) => {
+  const profile = createDefaultOpenAIProfile({
+    id: 'test-openai',
+    ...(overrides as Parameters<typeof createDefaultOpenAIProfile>[0]),
+  })
+  return {
+    ...DEFAULT_SETTINGS,
+    ...profile,
+    customProviders: DEFAULT_SETTINGS.customProviders,
+    profiles: [profile],
+    activeProfileId: profile.id,
+  }
+}
 
 describe('callImageApi', () => {
   afterEach(() => {
@@ -24,7 +38,7 @@ describe('callImageApi', () => {
       }))
 
       await callImageApi({
-        settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses', codexCli },
+        settings: createOpenAISettings({ apiKey: 'test-key', apiMode: 'responses', codexCli }),
         prompt: 'prompt',
         params: { ...DEFAULT_PARAMS },
         inputImageDataUrls: [],
@@ -51,7 +65,7 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: createOpenAISettings({ apiKey: 'test-key', codexCli: true }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -82,7 +96,7 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: createOpenAISettings({ apiKey: 'test-key', codexCli: true }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -110,9 +124,37 @@ describe('callImageApi', () => {
 
     await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...createOpenAISettings(),
         apiKey: 'test-key',
         apiProxy: true,
+        baseUrl: 'http://api.example.com/v1',
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api-proxy/images/generations',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('uses the same-origin API proxy path when API proxy is locked', async () => {
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    vi.stubEnv('VITE_API_PROXY_LOCKED', 'true')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await callImageApi({
+      settings: {
+        ...createOpenAISettings(),
+        apiKey: 'test-key',
+        apiProxy: false,
         baseUrl: 'http://api.example.com/v1',
       },
       prompt: 'prompt',
@@ -135,7 +177,7 @@ describe('callImageApi', () => {
     }))
 
     await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      settings: createOpenAISettings({ apiKey: 'test-key' }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -159,7 +201,7 @@ describe('callImageApi', () => {
 
     await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...createOpenAISettings(),
         apiKey: 'test-key',
         apiProxy: true,
         baseUrl: 'http://api.example.com/v1',

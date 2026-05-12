@@ -63,6 +63,8 @@ export interface ApiProfile {
   apiMode: ApiMode
   codexCli: boolean
   apiProxy: boolean
+  responseFormatB64Json?: boolean
+  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'apiMode' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json'>>>>
 }
 
 export interface AppSettings {
@@ -75,10 +77,12 @@ export interface AppSettings {
   codexCli: boolean
   apiProxy: boolean
   customProviders: CustomProviderDefinition[]
+  providerOrder?: string[]
   clearInputAfterSubmit: boolean
   persistInputOnRestart: boolean
   reuseTaskApiProfileTemporarily: boolean
   alwaysShowRetryButton: boolean
+  enterSubmit: boolean
   profiles: ApiProfile[]
   activeProfileId: string
 }
@@ -156,6 +160,10 @@ export interface TaskRecord {
   maskImageId?: string | null
   /** 输出图片的 image store id 列表 */
   outputImages: string[]
+  /** API 返回的原始图片 HTTP URL（非 base64 时记录） */
+  rawImageUrls?: string[]
+  /** 发生解析错误时的原始响应 JSON */
+  rawResponsePayload?: string
   status: TaskStatus
   error: string | null
   createdAt: number

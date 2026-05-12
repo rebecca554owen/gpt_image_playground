@@ -1,6 +1,6 @@
 import type { ApiProfile, CustomProviderDefinition, CustomProviderPollMapping, CustomProviderResultMapping, CustomProviderSubmitMapping, ImageApiResponse, ResponsesApiResponse, TaskParams } from '../types'
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
-import { buildApiUrl, isApiProxyAvailable, readClientDevProxyConfig } from './devProxy'
+import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
@@ -137,7 +137,9 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
 }> {
   const output = payload.output
   if (!Array.isArray(output) || !output.length) {
-    throw new Error('接口未返回图片数据')
+    const err = new Error('接口未返回图片数据')
+    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    throw err
   }
 
   const results: Array<{ image: string; actualParams?: Partial<TaskParams>; revisedPrompt?: string }> = []
@@ -156,7 +158,9 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
   }
 
   if (!results.length) {
-    throw new Error('接口未返回可用图片数据')
+    const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
+    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    throw err
   }
 
   return results
@@ -165,27 +169,39 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
 async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
   const data = payload.data
   if (!Array.isArray(data) || !data.length) {
-    throw new Error('接口未返回图片数据')
+    const err = new Error('接口没有返回图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
+    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    throw err
   }
 
   const images: string[] = []
+  const rawImageUrls = data.map((item) => item.url).filter(isHttpUrl)
   const revisedPrompts: Array<string | undefined> = []
-  for (const item of data) {
-    const b64 = item.b64_json
-    if (b64) {
-      images.push(normalizeBase64Image(b64, mime))
-      revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
-      continue
-    }
+  try {
+    for (const item of data) {
+      const b64 = item.b64_json
+      if (b64) {
+        images.push(normalizeBase64Image(b64, mime))
+        revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
+        continue
+      }
 
-    if (isHttpUrl(item.url) || isDataUrl(item.url)) {
-      images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal))
-      revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
+      if (isHttpUrl(item.url) || isDataUrl(item.url)) {
+        images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal))
+        revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
+      }
     }
+  } catch (err) {
+    if (rawImageUrls.length > 0 && err instanceof Error) {
+      (err as any).rawImageUrls = rawImageUrls
+    }
+    throw err
   }
 
   if (!images.length) {
-    throw new Error('接口未返回可用图片数据')
+    const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
+    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    throw err
   }
 
   const actualParams = mergeActualParams(
@@ -196,6 +212,7 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
     actualParams,
     actualParamsList: images.map(() => actualParams),
     revisedPrompts,
+    ...(rawImageUrls.length ? { rawImageUrls } : {}),
   }
 }
 
@@ -241,12 +258,13 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   const revisedPrompts = successfulResults.flatMap((r) =>
     r.revisedPrompts?.length ? r.revisedPrompts : r.images.map(() => undefined),
   )
+  const rawImageUrls = successfulResults.flatMap((r) => r.rawImageUrls ?? [])
   const actualParams = mergeActualParams(
     successfulResults[0]?.actualParams ?? {},
     { n: images.length },
   )
 
-  return { images, actualParams, actualParamsList, revisedPrompts }
+  return { images, actualParams, actualParamsList, revisedPrompts, ...(rawImageUrls.length ? { rawImageUrls } : {}) }
 }
 
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
@@ -257,7 +275,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
   const isEdit = inputImageDataUrls.length > 0
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
-  const useApiProxy = profile.apiProxy && isApiProxyAvailable(proxyConfig)
+  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const requestHeaders = createRequestHeaders(profile)
   const paths = createOpenAICompatiblePaths(customProvider)
 
@@ -284,6 +302,9 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       }
       if (params.n > 1) {
         formData.append('n', String(params.n))
+      }
+      if (profile.responseFormatB64Json) {
+        formData.append('response_format', 'b64_json')
       }
 
       const imageBlobs: Blob[] = []
@@ -339,6 +360,9 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       }
       if (params.n > 1) {
         body.n = params.n
+      }
+      if (profile.responseFormatB64Json) {
+        body.response_format = 'b64_json'
       }
 
       response = await fetch(buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy), {
@@ -489,19 +513,32 @@ async function createCustomMultipartBody(mapping: CustomProviderSubmitMapping, o
 
 async function extractCustomImages(payload: unknown, result: CustomProviderResultMapping, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
   const images: string[] = []
-  for (const path of result.b64JsonPaths ?? []) {
-    for (const value of getAllByPath(payload, path)) {
-      if (typeof value === 'string' && value.trim()) images.push(normalizeBase64Image(value, mime))
+  const imageUrls = (result.imageUrlPaths ?? []).flatMap((path) =>
+    getAllByPath(payload, path).filter((value): value is string => isHttpUrl(value) || isDataUrl(value)),
+  )
+  const rawImageUrls = imageUrls.filter(isHttpUrl)
+  try {
+    for (const path of result.b64JsonPaths ?? []) {
+      for (const value of getAllByPath(payload, path)) {
+        if (typeof value === 'string' && value.trim()) images.push(normalizeBase64Image(value, mime))
+      }
     }
-  }
-  for (const path of result.imageUrlPaths ?? []) {
-    for (const value of getAllByPath(payload, path)) {
-      if (isHttpUrl(value) || isDataUrl(value)) images.push(await fetchImageUrlAsDataUrl(value, mime, signal))
+    for (const url of imageUrls) {
+      images.push(await fetchImageUrlAsDataUrl(url, mime, signal))
     }
+  } catch (err) {
+    if (rawImageUrls.length > 0 && err instanceof Error) {
+      (err as any).rawImageUrls = rawImageUrls
+    }
+    throw err
   }
 
-  if (!images.length) throw new Error('接口未返回可用图片数据')
-  return { images }
+  if (!images.length) {
+    const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认接口实际返回的数据结构，并根据 API 文档调整「自定义服务商」配置中的结果提取路径。')
+    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    throw err
+  }
+  return { images, ...(rawImageUrls.length ? { rawImageUrls } : {}) }
 }
 
 async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: CallApiOptions, profile: ApiProfile, controller: AbortController): Promise<unknown> {
@@ -516,14 +553,22 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
 
   if (method !== 'GET') {
     if (contentType === 'multipart') {
-      body = await createCustomMultipartBody(mapping, opts, context)
+      const formData = await createCustomMultipartBody(mapping, opts, context)
+      if (profile.responseFormatB64Json) {
+        formData.append('response_format', 'b64_json')
+      }
+      body = formData
     } else {
       assertImageInputPayloadSize(
         opts.inputImageDataUrls.reduce((sum, dataUrl) => sum + getDataUrlEncodedByteSize(dataUrl), 0) +
           (opts.maskDataUrl ? getDataUrlEncodedByteSize(opts.maskDataUrl) : 0),
       )
       headers['Content-Type'] = 'application/json'
-      body = JSON.stringify(resolveTemplateValue(mapping.body ?? {}, context))
+      const resolved = resolveTemplateValue(mapping.body ?? {}, context)
+      if (profile.responseFormatB64Json && resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
+        (resolved as Record<string, unknown>).response_format = 'b64_json'
+      }
+      body = JSON.stringify(resolved)
     }
   }
 
@@ -619,6 +664,11 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
     const submitPayload = await submitCustomRequest(submitMapping, opts, profile, controller)
     const taskIdValue = submitMapping.taskIdPath ? getByPath(submitPayload, submitMapping.taskIdPath) : undefined
     const taskId = typeof taskIdValue === 'string' ? taskIdValue.trim() : String(taskIdValue ?? '').trim()
+    if (submitMapping.taskIdPath && !taskId) {
+      const err = new Error('无法从响应中提取异步任务 ID，请查看原始响应内容确认接口实际返回的数据结构，并根据 API 文档调整「自定义服务商」配置中的 taskIdPath。')
+      ;(err as any).rawResponsePayload = JSON.stringify(submitPayload, null, 2)
+      throw err
+    }
     if (!taskId) return extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal)
     if (!customProvider.poll) throw new Error('异步接口返回了 task_id，但服务商配置缺少 poll')
     opts.onCustomTaskEnqueued?.({ taskId })
@@ -658,19 +708,20 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
   const revisedPrompts = successfulResults.flatMap((r) =>
     r.revisedPrompts?.length ? r.revisedPrompts : r.images.map(() => undefined),
   )
+  const rawImageUrls = successfulResults.flatMap((r) => r.rawImageUrls ?? [])
   const actualParams = mergeActualParams(
     successfulResults[0]?.actualParams ?? {},
     images.length === opts.params.n ? { n: opts.params.n } : { n: images.length },
   )
 
-  return { images, actualParams, actualParamsList, revisedPrompts }
+  return { images, actualParams, actualParamsList, revisedPrompts, ...(rawImageUrls.length ? { rawImageUrls } : {}) }
 }
 
 async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
-  const useApiProxy = profile.apiProxy && isApiProxyAvailable(proxyConfig)
+  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const requestHeaders = createRequestHeaders(profile)
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)

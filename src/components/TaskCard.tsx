@@ -2,7 +2,9 @@ import { useEffect, useState, useRef } from 'react'
 import type { TaskRecord } from '../types'
 import { useStore, ensureImageThumbnailCached, subscribeImageThumbnail, updateTaskInStore, retryTask } from '../store'
 import { formatImageRatio } from '../lib/size'
-import { ParamValue } from '../lib/paramDisplay'
+import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
+import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
+import { CodeIcon } from './icons'
 
 interface Props {
   task: TaskRecord
@@ -36,7 +38,20 @@ export default function TaskCard({
   const suppressClickUntilRef = useRef(0)
   const horizontalSwipeRef = useRef(false)
 
+  const isTagScrollTarget = (target: EventTarget | null) => {
+    return target instanceof Element && Boolean(target.closest('[data-tag-scroll-area]'))
+  }
+
   const handleTouchStart = (e: React.TouchEvent) => {
+    if (isTagScrollTarget(e.target)) {
+      touchStartRef.current = null
+      horizontalSwipeRef.current = false
+      setIsSwiping(false)
+      setSwipeOffset(0)
+      setSwipeActionActive(false)
+      return
+    }
+
     if (swipeResetTimerRef.current != null) {
       window.clearTimeout(swipeResetTimerRef.current)
       swipeResetTimerRef.current = null
@@ -49,6 +64,7 @@ export default function TaskCard({
   }
 
   const handleTouchMove = (e: React.TouchEvent) => {
+    if (isTagScrollTarget(e.target)) return
     if (!touchStartRef.current) return
     const deltaX = e.touches[0].clientX - touchStartRef.current.x
     const deltaY = e.touches[0].clientY - touchStartRef.current.y
@@ -65,6 +81,15 @@ export default function TaskCard({
   }
 
   const handleTouchEnd = (e: React.TouchEvent) => {
+    if (isTagScrollTarget(e.target)) {
+      touchStartRef.current = null
+      horizontalSwipeRef.current = false
+      setIsSwiping(false)
+      setSwipeOffset(0)
+      setSwipeActionActive(false)
+      return
+    }
+
     setIsSwiping(false)
     setSwipeOffset(0)
     
@@ -168,6 +193,21 @@ export default function TaskCard({
       ? 'bg-gray-500 dark:bg-gray-600'
       : 'bg-blue-500'
     : 'bg-gray-200 dark:bg-gray-700'
+
+  const qualityDisplay = getParamDisplay(task, 'quality')
+  const showQuality = task.params.quality !== 'auto' || qualityDisplay.isMismatch
+
+  const sizeDisplay = getParamDisplay(task, 'size')
+  const showSize = task.params.size !== 'auto' || sizeDisplay.isMismatch
+
+  const formatDisplay = getParamDisplay(task, 'output_format')
+  const showFormat = task.params.output_format !== 'png' || formatDisplay.isMismatch
+
+  const nDisplay = getParamDisplay(task, 'n')
+  const showN = task.params.n > 1 || nDisplay.isMismatch
+
+  const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
+  const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
 
   return (
     <div className="relative rounded-xl">
@@ -344,24 +384,82 @@ export default function TaskCard({
 
         {/* 右侧信息区域 */}
         <div className="flex-1 p-3 flex flex-col min-w-0">
-          <div className="flex-1 min-h-0 mb-2">
+          <div className="flex-1 min-h-0 mb-2 overflow-hidden">
             <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed line-clamp-3">
               {task.prompt || '(无提示词)'}
             </p>
           </div>
           <div className="mt-auto flex flex-col gap-1.5">
-            {/* 参数：横向滚动 */}
-            <div className="flex overflow-x-auto hide-scrollbar gap-1.5 whitespace-nowrap mask-edge-r min-w-0 pr-2">
-              <ParamValue task={task} paramKey="quality" className="text-xs px-1.5 py-0.5 rounded flex-shrink-0" />
-              <ParamValue task={task} paramKey="size" className="text-xs px-1.5 py-0.5 rounded flex-shrink-0" />
-              <ParamValue task={task} paramKey="output_format" className="text-xs px-1.5 py-0.5 rounded flex-shrink-0" />
-              <ParamValue task={task} paramKey="n" className="text-xs px-1.5 py-0.5 rounded flex-shrink-0" />
-              {task.maskImageId && (
-                <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 flex-shrink-0">
-                  mask
+            {/* 参数与信息：横向滚动 */}
+            <div 
+              data-tag-scroll-area
+              className="flex overflow-x-auto hide-scrollbar pt-0.5 gap-1.5 whitespace-nowrap mask-edge-r min-w-0 pr-2"
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              onTouchCancel={(e) => e.stopPropagation()}
+            >
+              {/* API Name */}
+              {(task.apiProfileName || task.apiProvider) && (
+                <span 
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-gray-600 dark:text-gray-300 text-xs flex-shrink-0"
+                  title={task.apiProfileName || task.apiProvider}
+                >
+                  <CodeIcon className="w-3 h-3 flex-shrink-0 text-gray-400" />
+                  <span className="truncate max-w-[8rem]">
+                    {task.apiProfileName || task.apiProvider}
+                  </span>
                 </span>
               )}
-              </div>
+              {/* Model */}
+              {showModel && (
+                <span 
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-gray-600 dark:text-gray-300 text-xs flex-shrink-0"
+                  title={task.apiModel}
+                >
+                  <svg className="w-3 h-3 flex-shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                  </svg>
+                  <span className="truncate max-w-[8rem]">
+                    {task.apiModel}
+                  </span>
+                </span>
+              )}
+              {/* Mask */}
+              {task.maskImageId && (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs flex-shrink-0">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                  局部重绘
+                </span>
+              )}
+              {/* Params: only show if not default or mismatch */}
+              {showQuality && (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs flex-shrink-0">
+                  <span className="text-gray-400 dark:text-gray-500">质量</span>
+                  {qualityDisplay.isMismatch ? <ActualValueBadge value={qualityDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{qualityDisplay.displayValue}</span>}
+                </span>
+              )}
+              {showSize && (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs flex-shrink-0">
+                  <span className="text-gray-400 dark:text-gray-500">尺寸</span>
+                  {sizeDisplay.isMismatch ? <ActualValueBadge value={sizeDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{sizeDisplay.displayValue}</span>}
+                </span>
+              )}
+              {showFormat && (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs flex-shrink-0">
+                  <span className="text-gray-400 dark:text-gray-500">格式</span>
+                  {formatDisplay.isMismatch ? <ActualValueBadge value={formatDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{formatDisplay.displayValue}</span>}
+                </span>
+              )}
+              {showN && (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs flex-shrink-0">
+                  <span className="text-gray-400 dark:text-gray-500">数量</span>
+                  {nDisplay.isMismatch ? <ActualValueBadge value={nDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{nDisplay.displayValue}</span>}
+                </span>
+              )}
+            </div>
             {/* 操作按钮 */}
             <div
               className="flex w-full items-center justify-between flex-shrink-0 mt-0.5 sm:w-auto sm:justify-end sm:gap-1"

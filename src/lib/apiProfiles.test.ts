@@ -7,6 +7,7 @@ import {
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_SETTINGS,
+  createDefaultOpenAIProfile,
   createDefaultFalProfile,
   findEquivalentApiProfile,
   importCustomProviderDefinitionFromJson,
@@ -587,5 +588,21 @@ describe('custom providers', () => {
     expect(profile.provider).toBe(provider.id)
     expect(profile.baseUrl).toBe(DEFAULT_SETTINGS.baseUrl)
     expect(profile.model).toBe(DEFAULT_IMAGES_MODEL)
+  })
+
+  it('restores OpenAI-compatible URL after switching through fal.ai', () => {
+    const openaiProfile = createDefaultOpenAIProfile({
+      baseUrl: 'https://api.compat.example.com/v1',
+      model: 'custom-openai-model',
+      apiProxy: false,
+    })
+
+    const falProfile = switchApiProfileProvider(openaiProfile, 'fal')
+    const restoredProfile = switchApiProfileProvider(falProfile, 'openai')
+
+    expect(falProfile.baseUrl).toBe(DEFAULT_FAL_BASE_URL)
+    expect(restoredProfile.baseUrl).toBe('https://api.compat.example.com/v1')
+    expect(restoredProfile.model).toBe('custom-openai-model')
+    expect(restoredProfile.apiProxy).toBe(false)
   })
 })
