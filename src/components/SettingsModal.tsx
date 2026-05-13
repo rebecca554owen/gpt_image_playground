@@ -1476,7 +1476,11 @@ export default function SettingsModal() {
                   />
                   <div data-selectable-text className="mt-1.5 min-h-[22px] flex items-center text-xs text-gray-500 dark:text-gray-500">
                     {apiProxyEnabled ? (
-                      <span className="text-yellow-600 dark:text-yellow-500">已开启代理，实际请求目标由部署端决定，此处设置被忽略。</span>
+                      <span className="text-yellow-600 dark:text-yellow-500">
+                        {apiProxyLocked
+                          ? '当前部署已锁定 API 代理，修改这里不会影响实际请求；实际目标由服务端 API_PROXY_URL 决定。'
+                          : '已开启代理，实际请求目标由部署端决定；关闭代理前，修改这里不会影响实际请求。'}
+                      </span>
                     ) : activeProfile.provider === 'fal' ? (
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_FAL_BASE_URL}</code>；填写自定义地址时将作为 fal.ai 代理 URL。</span>
                     ) : activeProfile.provider === 'openai' ? (
@@ -1528,7 +1532,7 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    {apiProxyLocked ? '当前部署已锁定 API 代理为开启，API URL 设置会被忽略。' : '当前部署提供同源代理时默认开启，可手动关闭。开启后用于解决浏览器跨域限制，API URL 设置会被忽略。'}
+                    {apiProxyLocked ? '当前部署已锁定 API 代理为开启，用户不能关闭；设置页 API URL 不参与实际请求。' : '当前部署提供同源代理时默认开启，可手动关闭。开启后用于解决浏览器跨域限制，API URL 设置会被忽略。'}
                   </div>
                 </div>
               )}
@@ -1772,17 +1776,6 @@ export default function SettingsModal() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                     </svg>
                     反馈问题
-                  </a>
-                  <a
-                    href="https://www.ifdian.net/a/cooksleep"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gray-100/80 px-5 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 hover:text-gray-900 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] dark:hover:text-white"
-                  >
-                    <svg className="h-4 w-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                    </svg>
-                    赞助作者
                   </a>
                 </div>
               </div>
