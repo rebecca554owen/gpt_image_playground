@@ -198,7 +198,9 @@ export default function DetailModal() {
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
-    return new Date(ts).toLocaleString('zh-CN')
+    const date = new Date(ts)
+    const pad = (value: number) => String(value).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
   }
 
   const formatDuration = () => {

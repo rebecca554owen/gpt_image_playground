@@ -3,6 +3,7 @@ import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './ca
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import {
   assertImageInputPayloadSize,
+  assertImageEditFileSize,
   assertMaskEditFileSize,
   type CallApiOptions,
   type CallApiResult,
@@ -347,6 +348,9 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       if (opts.maskDataUrl) {
         assertMaskEditFileSize('遮罩主图文件', imageBlobs[0]?.size ?? 0)
         assertMaskEditFileSize('遮罩文件', maskBlob?.size ?? 0)
+      }
+      for (let i = 0; i < imageBlobs.length; i++) {
+        assertImageEditFileSize(`参考图 ${i + 1} 文件`, imageBlobs[i].size)
       }
       assertImageInputPayloadSize(
         imageBlobs.reduce((sum, blob) => sum + blob.size, 0) + (maskBlob?.size ?? 0),
@@ -757,6 +761,9 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     if (opts.maskDataUrl) {
       assertMaskEditFileSize('遮罩主图文件', getDataUrlDecodedByteSize(inputImageDataUrls[0] ?? ''))
       assertMaskEditFileSize('遮罩文件', getDataUrlDecodedByteSize(opts.maskDataUrl))
+    }
+    for (let i = 0; i < inputImageDataUrls.length; i++) {
+      assertImageEditFileSize(`参考图 ${i + 1} 文件`, getDataUrlDecodedByteSize(inputImageDataUrls[i]))
     }
     assertImageInputPayloadSize(
       inputImageDataUrls.reduce((sum, dataUrl) => sum + getDataUrlEncodedByteSize(dataUrl), 0) +

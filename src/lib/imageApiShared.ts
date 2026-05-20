@@ -7,7 +7,8 @@ export const MIME_MAP: Record<string, string> = {
 }
 
 export const MAX_MASK_EDIT_FILE_BYTES = 50 * 1024 * 1024
-export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 512 * 1024 * 1024
+export const MAX_IMAGE_EDIT_FILE_BYTES = 50 * 1024 * 1024
+export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 256 * 1024 * 1024
 
 export interface CallApiOptions {
   settings: AppSettings
@@ -49,6 +50,12 @@ function formatMiB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
 }
 
+function formatOfficialLimitText(maxBytes: number) {
+  return maxBytes >= 1024 * 1024
+    ? `${Math.round(maxBytes / 1024 / 1024)} MB`
+    : formatMiB(maxBytes)
+}
+
 export function getDataUrlEncodedByteSize(dataUrl: string): number {
   return dataUrl.length
 }
@@ -68,16 +75,20 @@ export function getDataUrlDecodedByteSize(dataUrl: string): number {
 
 function assertMaxBytes(label: string, bytes: number, maxBytes: number) {
   if (bytes > maxBytes) {
-    throw new Error(`${label}过大：${formatMiB(bytes)}，上限为 ${formatMiB(maxBytes)}`)
+    throw new Error(`${label}过大：当前约 ${formatMiB(bytes)}，上限为 ${formatOfficialLimitText(maxBytes)}`)
   }
 }
 
 export function assertImageInputPayloadSize(bytes: number) {
-  assertMaxBytes('图像输入有效负载总大小', bytes, MAX_IMAGE_INPUT_PAYLOAD_BYTES)
+  assertMaxBytes('图像输入总大小', bytes, MAX_IMAGE_INPUT_PAYLOAD_BYTES)
 }
 
 export function assertMaskEditFileSize(label: string, bytes: number) {
   assertMaxBytes(label, bytes, MAX_MASK_EDIT_FILE_BYTES)
+}
+
+export function assertImageEditFileSize(label: string, bytes: number) {
+  assertMaxBytes(label, bytes, MAX_IMAGE_EDIT_FILE_BYTES)
 }
 
 async function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> {
