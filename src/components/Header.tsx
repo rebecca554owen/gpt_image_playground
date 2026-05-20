@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { useVersionCheck } from '../hooks/useVersionCheck'
 import { useTooltip } from '../hooks/useTooltip'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
+import { getPurchaseUrl } from '../lib/purchaseUrl'
 import ViewportTooltip from './ViewportTooltip'
 import HelpModal from './HelpModal'
 
@@ -20,6 +21,7 @@ export default function Header() {
   const setShowSettings = useStore((s) => s.setShowSettings)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const { hasUpdate, latestRelease, dismiss } = useVersionCheck()
+  const purchaseUrl = useStore((s) => getPurchaseUrl(s.settings.baseUrl))
   const [showHelp, setShowHelp] = useState(false)
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [isPwaInstalled, setIsPwaInstalled] = useState(isInstalledPwa)
@@ -92,7 +94,7 @@ export default function Header() {
           <div className="flex-1 min-w-0 pr-2">
             <h1 className="inline-flex items-start relative">
               <a
-                href="https://github.com/CookSleep/gpt_image_playground"
+                href={purchaseUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[17px] sm:text-lg font-bold tracking-tight text-gray-800 dark:text-gray-100 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"

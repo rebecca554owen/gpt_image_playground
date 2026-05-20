@@ -108,7 +108,7 @@
 
 点击上方按钮导入仓库即可，Vercel 会自动执行构建并部署静态文件。
 
-**配置默认 API URL**：在 Vercel 项目的 **Settings → Environment Variables** 中添加 `VITE_DEFAULT_API_URL`（如 `https://api.openai.com/v1`），然后重新部署即可生效。
+**配置默认 API URL**：在 Vercel 项目的 **Settings → Environment Variables** 中添加 `VITE_DEFAULT_API_URL`（如 `https://gpt-agent.cc/v1`），然后重新部署即可生效。
 
 **绑定自定义域名 (国内直连)**：Vercel 默认分配的 `.vercel.app` 域名在国内通常无法直接访问。如果你希望在国内直连访问，请在 Vercel 项目的 **Settings → Domains** 中绑定你自己的域名。
 
@@ -145,13 +145,13 @@ npm run deploy:cf
 **配置默认 API URL**：Cloudflare Workers 的环境变量不会自动改写已经构建好的静态文件。若需预设默认 API 地址，请在构建前设置 `VITE_DEFAULT_API_URL` 后再部署。
 
 ```bash
-VITE_DEFAULT_API_URL=https://api.openai.com/v1 npm run deploy:cf
+VITE_DEFAULT_API_URL=https://gpt-agent.cc/v1 npm run deploy:cf
 ```
 
 PowerShell 示例：
 
 ```powershell
-$env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
+$env:VITE_DEFAULT_API_URL="https://gpt-agent.cc/v1"; npm run deploy:cf
 ```
 
 </details>
@@ -177,10 +177,10 @@ $env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
 
 ```bash
 docker run -d -p 8080:80 \
-  -e DEFAULT_API_URL=https://api.openai.com/v1 \
+  -e DEFAULT_API_URL=https://gpt-agent.cc/v1 \
   -e ENABLE_API_PROXY=true \
   -e LOCK_API_PROXY=true \
-  -e API_PROXY_URL=https://api.openai.com/v1 \
+  -e API_PROXY_URL=https://gpt-agent.cc/v1 \
   ghcr.io/cooksleep/gpt_image_playground:latest
 ```
 
@@ -193,7 +193,7 @@ services:
   gpt-image-playground:
     image: ghcr.io/cooksleep/gpt_image_playground:latest
     environment:
-      - DEFAULT_API_URL=https://api.openai.com/v1
+      - DEFAULT_API_URL=https://gpt-agent.cc/v1
     ports:
       - "8080:80"
     restart: unless-stopped
@@ -210,7 +210,7 @@ services:
 
 **1. 环境准备与启动**
 
-你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://api.openai.com/v1`）。然后安装依赖并启动：
+你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://gpt-agent.cc/v1`）。然后安装依赖并启动：
 
 ```bash
 npm install
@@ -357,24 +357,6 @@ JSON 结构示例：
 本项目基于 [MIT License](LICENSE) 开源。
 
 特别致谢：[LINUX DO](https://linux.do)
-
-## 💜 赞助支持
-
-<div align="center">
-
-如果这个项目对你有帮助，欢迎通过爱发电赞助支持，你的每一份鼓励都是持续更新的动力！
-
-<br>
-<br>
-
-<a href="https://www.ifdian.net/a/cooksleep">
-  <img src="https://img.shields.io/badge/%E7%88%B1%E5%8F%91%E7%94%B5-%E8%B5%9E%E5%8A%A9%E4%BD%9C%E8%80%85-946ce6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyMS4zNWwtMS40NS0xLjMyQzUuNCAxNS4zNiAyIDEyLjI4IDIgOC41IDIgNS40MiA0LjQyIDMgNy41IDNjMS43NCAwIDMuNDEuODEgNC41IDIuMDlDMTMuMDkgMy44MSAxNC43NiAzIDE2LjUgMyAxOS41OCAzIDIyIDUuNDIgMjIgOC41YzAgMy43OC0zLjQgNi44Ni04LjU1IDExLjU0TDEyIDIxLjM1eiIvPjwvc3ZnPg==&logoColor=white" alt="爱发电赞助" />
-</a>
-
-<br>
-<br>
-
-</div>
 
 ## ⭐ Star History
 

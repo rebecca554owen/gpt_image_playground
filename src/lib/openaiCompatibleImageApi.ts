@@ -232,36 +232,63 @@ async function callImagesApi(opts: CallApiOptions, profile: ApiProfile, customPr
     return callImagesApiConcurrent(opts, profile, n, customProvider)
   }
 
-  return callImagesApiSingle(opts, profile, customProvider)
+  const result = await callImagesApiSingle(opts, profile, customProvider)
+  if (n <= 1 || result.images.length >= n) return result
+
+  const missingCount = n - result.images.length
+  const singleOpts = { ...opts, params: { ...opts.params, n: 1 } }
+  const supplementalResults = await runSettledImageRequests(
+    Array.from({ length: missingCount }).map(() => callImagesApiSingle(singleOpts, profile, customProvider)),
+    { throwIfAllRejected: false },
+  )
+
+  if (!supplementalResults.length) return combineImageResults([result])
+  return combineImageResults([result, ...supplementalResults], n)
 }
 
 async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile, n: number, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
   const singleOpts = { ...opts, params: { ...opts.params, n: 1, quality: 'auto' as const } }
-  const results = await Promise.allSettled(
+  const successfulResults = await runSettledImageRequests(
     Array.from({ length: n }).map(() => callImagesApiSingle(singleOpts, profile, customProvider)),
+    { throwIfAllRejected: true },
   )
+  if (successfulResults.length === 0) {
+    throw new Error('所有并发请求均失败')
+  }
 
+  return combineImageResults(successfulResults, n)
+}
+
+async function runSettledImageRequests(
+  promises: Array<Promise<CallApiResult>>,
+  options: { throwIfAllRejected: boolean },
+): Promise<CallApiResult[]> {
+  const results = await Promise.allSettled(promises)
   const successfulResults = results
     .filter((r): r is PromiseFulfilledResult<CallApiResult> => r.status === 'fulfilled')
     .map((r) => r.value)
 
-  if (successfulResults.length === 0) {
+  if (successfulResults.length === 0 && options.throwIfAllRejected) {
     const firstError = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
     if (firstError) throw firstError.reason
-    throw new Error('所有并发请求均失败')
   }
 
-  const images = successfulResults.flatMap((r) => r.images)
-  const actualParamsList = successfulResults.flatMap((r) =>
+  return successfulResults
+}
+
+function combineImageResults(results: CallApiResult[], requestedCount?: number): CallApiResult {
+  const maxImages = requestedCount && requestedCount > 0 ? requestedCount : undefined
+  const images = results.flatMap((r) => r.images).slice(0, maxImages)
+  const actualParamsList = results.flatMap((r) =>
     r.actualParamsList?.length ? r.actualParamsList : r.images.map(() => r.actualParams),
-  )
-  const revisedPrompts = successfulResults.flatMap((r) =>
+  ).slice(0, maxImages)
+  const revisedPrompts = results.flatMap((r) =>
     r.revisedPrompts?.length ? r.revisedPrompts : r.images.map(() => undefined),
-  )
-  const rawImageUrls = successfulResults.flatMap((r) => r.rawImageUrls ?? [])
+  ).slice(0, maxImages)
+  const rawImageUrls = results.flatMap((r) => r.rawImageUrls ?? []).slice(0, maxImages)
   const actualParams = mergeActualParams(
-    successfulResults[0]?.actualParams ?? {},
-    { n: images.length },
+    results[0]?.actualParams ?? {},
+    requestedCount && images.length === requestedCount ? { n: requestedCount } : { n: images.length },
   )
 
   return { images, actualParams, actualParamsList, revisedPrompts, ...(rawImageUrls.length ? { rawImageUrls } : {}) }

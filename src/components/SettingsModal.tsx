@@ -4,13 +4,10 @@ import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
 import { useStore, exportData, importData, clearData } from '../store'
 import {
-  createDefaultOpenAIProfile,
-  DEFAULT_FAL_BASE_URL,
-  DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
-  DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_RESPONSES_MODEL,
   DEFAULT_SETTINGS,
+  createDefaultOpenAIProfile,
   findEquivalentApiProfile,
   getApiProviderLabel,
   getActiveApiProfile,
@@ -26,6 +23,7 @@ import type { ApiProfile, AppSettings, CustomProviderDefinition } from '../types
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdown'
+import { getPurchaseUrl } from '../lib/purchaseUrl'
 import Select from './Select'
 import { Checkbox } from './Checkbox'
 import ViewportTooltip from './ViewportTooltip'
@@ -88,7 +86,7 @@ interface CustomProviderForm {
 }
 
 const DEFAULT_CUSTOM_PROVIDER_MANIFEST = {
-  name: '自定义服务商',
+  name: '默认服务商',
   submit: {
     path: 'images/generations',
     method: 'POST',
@@ -155,8 +153,7 @@ function customProviderFormToInput(form: CustomProviderForm) {
 }
 
 function isPristineNewOpenAIProfile(profile: ApiProfile) {
-  const defaultProfile = createDefaultOpenAIProfile({ id: profile.id, name: '新配置' })
-  return profile.name === '新配置' &&
+  return (profile.name === '新配置' || profile.name === '默认配置') &&
     profile.provider === 'openai' &&
     profile.baseUrl === DEFAULT_SETTINGS.baseUrl &&
     profile.apiKey === '' &&
@@ -164,7 +161,7 @@ function isPristineNewOpenAIProfile(profile: ApiProfile) {
     profile.timeout === DEFAULT_SETTINGS.timeout &&
     profile.apiMode === 'images' &&
     profile.codexCli === false &&
-    profile.apiProxy === defaultProfile.apiProxy
+    profile.apiProxy === false
 }
 
 function getImportedProfileFromMergedSettings(
@@ -177,7 +174,31 @@ function getImportedProfileFromMergedSettings(
     .find((profile): profile is ApiProfile => profile != null && previousProfileIds.has(profile.id))
   if (existingProfile) return existingProfile
 
-  return nextSettings.profiles.find((profile) => !previousProfileIds.has(profile.id)) ?? nextSettings.profiles[0]
+  return nextSettings.profiles.find((profile) =>
+    !previousProfileIds.has(profile.id) && nextSettings.customProviders.some((provider) => provider.id === profile.provider),
+  ) ?? nextSettings.profiles[0]
+}
+
+function createPresetCustomProvider(existingProviders: CustomProviderDefinition[]): CustomProviderDefinition {
+  const usedIds = new Set(existingProviders.map((provider) => provider.id))
+  const provider = normalizeCustomProviderDefinition({ ...DEFAULT_CUSTOM_PROVIDER_MANIFEST }, usedIds)
+  if (!provider) throw new Error('默认自定义服务商配置无效')
+  return provider
+}
+
+function createPresetCustomProfile(provider: CustomProviderDefinition, sourceProfile?: ApiProfile): ApiProfile {
+  return {
+    id: newId('custom'),
+    name: '默认配置',
+    provider: provider.id,
+    baseUrl: sourceProfile?.baseUrl || DEFAULT_SETTINGS.baseUrl,
+    apiKey: sourceProfile?.apiKey || '',
+    model: sourceProfile?.model || DEFAULT_IMAGES_MODEL,
+    timeout: sourceProfile?.timeout || DEFAULT_SETTINGS.timeout,
+    apiMode: 'images',
+    codexCli: false,
+    apiProxy: false,
+  }
 }
 
 const CUSTOM_PROVIDER_LLM_PROMPT = `# 角色
@@ -323,6 +344,7 @@ export default function SettingsModal() {
   const [copyImportUrlProfile, setCopyImportUrlProfile] = useState<ApiProfile | null>(null)
   const [copyImportUrlOptions, setCopyImportUrlOptions] = useState<CopyImportUrlOptions>(readCopyImportUrlOptions)
 
+  const visibleProfiles = draft.profiles
   const apiProxyConfig = readClientDevProxyConfig()
   const apiProxyAvailable = isApiProxyAvailable(apiProxyConfig)
   const apiProxyLocked = isApiProxyLocked(apiProxyConfig)
@@ -330,44 +352,43 @@ export default function SettingsModal() {
   const apiProxyChecked = activeProfile.provider === 'openai' && (apiProxyLocked || activeProfile.apiProxy)
   const apiProxyEnabled = apiProxyAvailable && activeProfile.provider === 'openai' && apiProxyChecked
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
-  const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal'
-  const activeCustomProvider = draft.customProviders.find((provider) => provider.id === activeProfile.provider)
-  const defaultProviderOrder = ['openai', 'fal', ...draft.customProviders.map(p => p.id)]
-  const providerOrder = draft.providerOrder || defaultProviderOrder
-
-  const unorderedProviderOptions = [
-    { label: 'OpenAI 兼容接口', value: 'openai', draggable: true },
-    { label: 'fal.ai', value: 'fal', draggable: true },
-    ...draft.customProviders.map((provider) => ({
-      label: provider.name,
-      value: provider.id,
-      draggable: true,
-      actions: [
-        { label: '编辑', onClick: () => openEditCustomProvider(provider) },
-        {
-          label: '删除',
-          variant: 'danger' as const,
-          onClick: () => confirmDeleteCustomProvider(provider),
-        },
-      ],
-    })),
-  ]
-
-  const providerOptions = [
-    { label: '创建自定义服务商', value: ADD_CUSTOM_PROVIDER_VALUE, variant: 'action' as const },
-    ...unorderedProviderOptions.sort((a, b) => {
-      const aIndex = providerOrder.indexOf(String(a.value))
-      const bIndex = providerOrder.indexOf(String(b.value))
-      const validA = aIndex !== -1 ? aIndex : defaultProviderOrder.indexOf(String(a.value))
-      const validB = bIndex !== -1 ? bIndex : defaultProviderOrder.indexOf(String(b.value))
-      return validA - validB
-    })
-  ]
-
+  const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible
+  const purchaseUrl = getPurchaseUrl(activeProfile.baseUrl || draft.baseUrl)
+  const purchaseUrlLabel = (() => {
+    try {
+      const url = new URL(purchaseUrl)
+      return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
+    } catch {
+      return purchaseUrl || '未配置域名'
+    }
+  })()
   const getDefaultModelForMode = (apiMode: AppSettings['apiMode']) =>
     apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
-
   const wasSettingsOpenRef = useRef(false)
+
+  const ensureVisibleCustomDraft = useCallback((settingsDraft: AppSettings) => {
+    let nextDraft = normalizeSettings(settingsDraft)
+    let nextVisibleProfiles = nextDraft.profiles
+
+    if (nextVisibleProfiles.length === 0) {
+      const fallbackProfile = createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置' })
+      nextDraft = normalizeSettings({
+        ...nextDraft,
+        profiles: [...nextDraft.profiles, fallbackProfile],
+        activeProfileId: fallbackProfile.id,
+      })
+      nextVisibleProfiles = [fallbackProfile]
+    }
+
+    if (!nextVisibleProfiles.some((profile) => profile.id === nextDraft.activeProfileId)) {
+      nextDraft = normalizeSettings({
+        ...nextDraft,
+        activeProfileId: nextVisibleProfiles[0].id,
+      })
+    }
+
+    return nextDraft
+  }, [])
 
   useEffect(() => {
     if (!showSettings) {
@@ -381,7 +402,7 @@ export default function SettingsModal() {
     const displaySettings = normalizedSettings.reuseTaskApiProfileTemporarily && reusedTaskApiProfileId && normalizedSettings.profiles.some((profile) => profile.id === reusedTaskApiProfileId)
       ? normalizeSettings({ ...normalizedSettings, activeProfileId: reusedTaskApiProfileId })
       : normalizedSettings
-    const nextDraft = normalizeSettings({
+    const nextDraft = ensureVisibleCustomDraft({
       ...displaySettings,
       profiles: displaySettings.profiles.map((profile) => ({
         ...profile,
@@ -392,7 +413,7 @@ export default function SettingsModal() {
     })
     setDraft(nextDraft)
     setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
-  }, [apiProxyAvailable, apiProxyLocked, showSettings, settings, reusedTaskApiProfileId])
+  }, [apiProxyAvailable, apiProxyLocked, ensureVisibleCustomDraft, showSettings, settings, reusedTaskApiProfileId])
 
   useEffect(() => {
     setTimeoutInput(String(activeProfile.timeout))
@@ -472,27 +493,25 @@ export default function SettingsModal() {
 
   const commitSettings = (nextDraft: AppSettings) => {
     const normalizedProfiles = nextDraft.profiles.map((profile) => {
-      const normalizedBaseUrl = profile.provider === 'fal'
-        ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
-        : normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
-      const defaultModel = profile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(profile.apiMode)
+      const normalizedBaseUrl = normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
+      const defaultModel = getDefaultModelForMode(profile.apiMode)
       return {
         ...profile,
-        name: profile.name.trim() || (profile.id === DEFAULT_OPENAI_PROFILE_ID ? '默认' : '新配置'),
+        provider: 'openai' as const,
+        name: profile.name.trim() || '新配置',
         baseUrl: normalizedBaseUrl,
         model: profile.model.trim() || defaultModel,
         timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
-        apiProxy: profile.provider === 'openai' && apiProxyAvailable ? (apiProxyLocked || profile.apiProxy) : false,
-        codexCli: profile.provider === 'openai' ? profile.codexCli : false,
+        apiProxy: apiProxyAvailable ? (apiProxyLocked || profile.apiProxy) : false,
+        codexCli: profile.codexCli,
       }
     })
-    const fallbackProfile = createDefaultOpenAIProfile({ id: newId('openai') })
-    const normalizedDraft = normalizeSettings({
+    const normalizedDraft = ensureVisibleCustomDraft({
       ...nextDraft,
-      profiles: normalizedProfiles.length ? normalizedProfiles : [fallbackProfile],
+      profiles: normalizedProfiles,
       activeProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.activeProfileId)
         ? nextDraft.activeProfileId
-        : (normalizedProfiles[0]?.id ?? fallbackProfile.id),
+        : normalizedProfiles[0]?.id,
     })
     setDraft(normalizedDraft)
     setSettings(normalizedDraft)
@@ -651,9 +670,17 @@ export default function SettingsModal() {
 
   const createNewProfile = () => {
     setReusedTaskApiProfile(null)
-    const profile = createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置' })
-    const nextDraft = normalizeSettings({ 
-        ...draft, 
+    const profile = {
+      ...activeProfile,
+      id: newId('openai'),
+      name: '新配置',
+      provider: 'openai' as const,
+      apiMode: 'images' as const,
+      codexCli: activeProfile.codexCli,
+      apiProxy: activeProfile.apiProxy,
+    }
+    const nextDraft = normalizeSettings({
+        ...draft,
         profiles: [...draft.profiles, profile],
         activeProfileId: profile.id
     })
@@ -823,48 +850,15 @@ export default function SettingsModal() {
   }
 
   const deleteProfile = (id: string) => {
-    if (draft.profiles.length <= 1) return
+    if (visibleProfiles.length <= 1) return
     if (id === reusedTaskApiProfileId) setReusedTaskApiProfile(null)
     const nextProfiles = draft.profiles.filter((item) => item.id !== id)
-    const nextDraft = normalizeSettings({
+    const nextDraft = ensureVisibleCustomDraft({
       ...draft,
       profiles: nextProfiles,
       activeProfileId: draft.activeProfileId === id ? nextProfiles[0].id : draft.activeProfileId,
     })
     commitSettings(nextDraft)
-  }
-
-  const handleProviderReorder = (sourceValue: string | number, targetValue: string | number, position: 'before' | 'after' | null) => {
-    const currentOrder = draft.providerOrder || ['openai', 'fal', ...draft.customProviders.map(p => p.id)]
-    const sourceIndex = currentOrder.indexOf(String(sourceValue))
-    const targetIndex = currentOrder.indexOf(String(targetValue))
-    if (sourceIndex < 0 || targetIndex < 0) return
-
-    const newOrder = [...currentOrder]
-    const [removed] = newOrder.splice(sourceIndex, 1)
-
-    let newTargetIndex = targetIndex
-    if (position === 'after') newTargetIndex++
-    if (sourceIndex < targetIndex) newTargetIndex--
-
-    newOrder.splice(newTargetIndex, 0, removed)
-
-    const nextDraft = normalizeSettings({ ...draft, providerOrder: newOrder })
-    commitSettings(nextDraft)
-  }
-
-  const handleProviderTypeChange = (value: string | number) => {
-    if (value === ADD_CUSTOM_PROVIDER_VALUE) {
-      setEditingCustomProviderId(null)
-      setCustomProviderForm(createDefaultCustomProviderForm())
-      setShowCustomProviderImport(true)
-      setCustomProviderImportError(null)
-      return
-    }
-
-    const provider = String(value) as ApiProfile['provider']
-    const customProvider = draft.customProviders.find((item) => item.id === provider)
-    updateActiveProfile(switchApiProfileProvider(activeProfile, provider, customProvider), true)
   }
 
   const updateCustomProviderForm = (patch: Partial<CustomProviderForm>) => {
@@ -932,18 +926,18 @@ export default function SettingsModal() {
   function confirmDeleteCustomProvider(provider: CustomProviderDefinition) {
     setConfirmDialog({
       title: '删除服务商',
-      message: `确定要删除自定义服务商「${provider.name}」吗？正在使用它的配置会切回 OpenAI 兼容接口。`,
+      message: `确定要删除自定义服务商「${provider.name}」吗？受影响的可见配置会自动切换到其他自定义服务商。`,
       action: () => deleteCustomProvider(provider),
     })
   }
 
   function deleteCustomProvider(provider: CustomProviderDefinition) {
     const providerId = provider.id
-    const nextDraft = normalizeSettings({
+    const nextDraft = ensureVisibleCustomDraft({
       ...draft,
-      customProviders: draft.customProviders.filter((provider) => provider.id !== providerId),
+      customProviders: draft.customProviders.filter((currentProvider) => currentProvider.id !== providerId),
       profiles: draft.profiles.map((profile) =>
-        profile.provider === providerId ? switchApiProfileProvider(profile, 'openai') : profile,
+        profile.provider === providerId ? { ...profile, provider: 'openai' } : profile,
       ),
     })
     commitSettings(nextDraft)
@@ -975,16 +969,18 @@ export default function SettingsModal() {
         const shouldReplaceActiveProfile = !editingCustomProviderId && isPristineNewOpenAIProfile(activeProfile) && !importedProfileAlreadyExisted
         const switchedToExistingProfile = !shouldReplaceActiveProfile && importedProfileAlreadyExisted
         const nextDraft = shouldReplaceActiveProfile
-          ? normalizeSettings({
+          ? ensureVisibleCustomDraft({
               ...mergedDraft,
               profiles: mergedDraft.profiles
                 .filter((profile) => profile.id === activeProfile.id || profile.id !== importedProfile.id)
                 .map((profile) => profile.id === activeProfile.id ? { ...importedProfile, id: activeProfile.id } : profile),
               activeProfileId: activeProfile.id,
             })
-          : normalizeSettings({
+          : ensureVisibleCustomDraft({
               ...mergedDraft,
-              activeProfileId: importedProfile.id,
+              activeProfileId: mergedDraft.customProviders.some((provider) => provider.id === importedProfile.provider)
+                ? importedProfile.id
+                : mergedDraft.profiles.find((profile) => mergedDraft.customProviders.some((provider) => provider.id === profile.provider))?.id ?? importedProfile.id,
             })
         setDraft(nextDraft)
         setSettings(nextDraft)
@@ -1284,7 +1280,7 @@ export default function SettingsModal() {
                             </span>
                           </button>
                           <div>
-                            {draft.profiles.map(profile => (
+                            {visibleProfiles.map(profile => (
                               <div
                                 key={profile.id}
                                 data-profile-id={profile.id}
@@ -1341,7 +1337,7 @@ export default function SettingsModal() {
                                   >
                                     <LinkIcon className="h-3.5 w-3.5" />
                                   </button>
-                                  {draft.profiles.length > 1 && (
+                                  {visibleProfiles.length > 1 && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -1382,13 +1378,9 @@ export default function SettingsModal() {
 
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">服务商类型</span>
-                <Select
-                  value={activeProfile.provider}
-                  onChange={handleProviderTypeChange}
-                  onReorder={handleProviderReorder}
-                  options={providerOptions}
-                  className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
-                />
+                <div className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200">
+                  OpenAI 兼容接口
+                </div>
               </div>
 
               {activeProviderUsesApiUrl && (
@@ -1402,16 +1394,20 @@ export default function SettingsModal() {
                     onBlur={(e) => commitActiveProfilePatch({ baseUrl: e.target.value })}
                     type="text"
                     disabled={apiProxyEnabled}
-                    placeholder={activeProfile.provider === 'fal' ? DEFAULT_FAL_BASE_URL : DEFAULT_SETTINGS.baseUrl}
+                    placeholder={DEFAULT_SETTINGS.baseUrl}
                     className={`w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50 ${apiProxyEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                   />
                   <div data-selectable-text className="mt-1.5 min-h-[22px] flex items-center text-xs text-gray-500 dark:text-gray-500">
                     {apiProxyEnabled ? (
-                      <span className="text-yellow-600 dark:text-yellow-500">已开启代理，实际请求目标由部署端决定，此处设置被忽略。</span>
-                    ) : activeProfile.provider === 'fal' ? (
-                      <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_FAL_BASE_URL}</code>；填写自定义地址时将作为 fal.ai 代理 URL。</span>
-                    ) : (
+                      <span className="text-yellow-600 dark:text-yellow-500">
+                        {apiProxyLocked
+                          ? '当前部署已锁定 API 代理，修改这里不会影响实际请求；实际目标由服务端 API_PROXY_URL 决定。'
+                          : '已开启代理，实际请求目标由部署端决定；关闭代理前，修改这里不会影响实际请求。'}
+                      </span>
+                    ) : activeProfile.provider === 'openai' ? (
                       <span>支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiUrl=</code></span>
+                    ) : (
+                      <span>支持 OpenAI 兼容的 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/v1/images</code> 与 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/v1/responses</code> 接口。</span>
                     )}
                   </div>
                 </label>
@@ -1457,11 +1453,10 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    {apiProxyLocked ? '当前部署已锁定 API 代理为开启，API URL 设置会被忽略。' : '当前部署提供同源代理时默认开启，可手动关闭。开启后用于解决浏览器跨域限制，API URL 设置会被忽略。'}
+                    {apiProxyLocked ? '当前部署已锁定 API 代理为开启，用户不能关闭；设置页 API URL 不参与实际请求。' : '当前部署提供同源代理时默认开启，可手动关闭。开启后用于解决浏览器跨域限制，API URL 设置会被忽略。'}
                   </div>
                 </div>
               )}
-
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API Key</span>
                 <div className="relative">
@@ -1470,7 +1465,7 @@ export default function SettingsModal() {
                     onChange={(e) => updateActiveProfile({ apiKey: e.target.value })}
                     onBlur={(e) => commitActiveProfilePatch({ apiKey: e.target.value })}
                     type={showApiKey ? 'text' : 'password'}
-                    placeholder={activeProfile.provider === 'fal' ? 'FAL_KEY' : 'sk-...'}
+                    placeholder="sk-..."
                     className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 pr-10 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                   />
                   <button
@@ -1499,31 +1494,6 @@ export default function SettingsModal() {
                 </div>
               </div>
 
-              {activeProfile.provider === 'openai' && (
-                <div className="block">
-                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API 接口</span>
-                  <Select
-                    value={activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode}
-                    onChange={(value) => {
-                      const apiMode = value as AppSettings['apiMode']
-                      const nextModel =
-                        activeProfile.model === DEFAULT_IMAGES_MODEL || activeProfile.model === DEFAULT_RESPONSES_MODEL
-                          ? getDefaultModelForMode(apiMode)
-                          : activeProfile.model
-                      updateActiveProfile({ apiMode, model: nextModel }, true)
-                    }}
-                    options={[
-                      { label: 'Images API (/v1/images)', value: 'images' },
-                      { label: 'Responses API (/v1/responses)', value: 'responses' },
-                    ]}
-                    className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
-                  />
-                  <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                    支持通过查询参数覆盖：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">apiMode=images</code> 或 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">apiMode=responses</code>。
-                  </div>
-                </div>
-              )}
-
               <label className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
                   模型 ID
@@ -1533,22 +1503,11 @@ export default function SettingsModal() {
                   onChange={(e) => updateActiveProfile({ model: e.target.value })}
                   onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
                   type="text"
-                  placeholder={activeProfile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
+                  placeholder={DEFAULT_IMAGES_MODEL}
                   className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                 />
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                  {activeProfile.provider === 'fal' ? (
-                    <>当前适配 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_FAL_MODEL}</code>。</>
-                  ) : activeCustomProvider ? (
-                    <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
-                  ) : (activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' ? (
-                    <>Responses API 需要使用支持 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">image_generation</code> 工具的文本模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_RESPONSES_MODEL}</code>。</>
-                  ) : (
-                    <>Images API 需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。</>
-                  )}
-                  {activeProfile.provider === 'openai' && (
-                    <>支持通过查询参数覆盖：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
-                  )}
+                  当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">OpenAI 兼容接口</code>。
                 </div>
               </label>
 
@@ -1709,7 +1668,7 @@ export default function SettingsModal() {
             {activeTab === 'about' && (
               <div className="flex h-full min-h-[300px] flex-col items-center justify-center pb-8 px-6">
                 <a
-                  href="https://github.com/CookSleep/gpt_image_playground"
+                  href={purchaseUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="group flex flex-col items-center outline-none"
@@ -1719,7 +1678,7 @@ export default function SettingsModal() {
                   </div>
                   <h4 className="text-[17px] font-bold text-gray-800 dark:text-gray-100">GPT Image Playground</h4>
                   <p className="mt-1.5 text-[13px] text-gray-500 transition-colors group-hover:text-gray-700 dark:text-gray-400 dark:group-hover:text-gray-300">
-                    @CookSleep
+                    {purchaseUrlLabel}
                   </p>
                 </a>
                 
@@ -1729,7 +1688,7 @@ export default function SettingsModal() {
 
                 <div className="flex flex-wrap items-center justify-center gap-3">
                   <a
-                    href="https://github.com/CookSleep/gpt_image_playground/issues"
+                    href={purchaseUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gray-100/80 px-5 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 hover:text-gray-900 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] dark:hover:text-white"
@@ -1738,17 +1697,6 @@ export default function SettingsModal() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                     </svg>
                     反馈问题
-                  </a>
-                  <a
-                    href="https://www.ifdian.net/a/cooksleep"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gray-100/80 px-5 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 hover:text-gray-900 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] dark:hover:text-white"
-                  >
-                    <svg className="h-4 w-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                    </svg>
-                    赞助作者
                   </a>
                 </div>
               </div>
@@ -1785,14 +1733,14 @@ export default function SettingsModal() {
               </div>
 
               <div ref={customProviderScrollBoundaryRef} className="flex-1 flex flex-col min-h-0 px-1 -mx-1 pb-2">
-                <div className="mb-6 shrink-0 rounded-2xl bg-gray-50/80 p-4 border border-gray-200/60 dark:bg-white/[0.02] dark:border-white/[0.05]">
-                  <div className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-gray-800 dark:text-gray-200">
+                <div className="mb-6 shrink-0 rounded-2xl border border-blue-100/50 bg-blue-50/50 p-4 dark:border-blue-500/10 dark:bg-blue-500/5">
+                  <div className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-blue-800 dark:text-blue-300">
                     <svg className="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                     </svg>
                     AI 一键生成与导入
                   </div>
-                  <div data-selectable-text className="mb-4 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                  <div data-selectable-text className="mb-4 text-xs leading-relaxed text-blue-600/80 dark:text-blue-400/80">
                     复制提示词发给 LLM，可根据 API 文档自动生成完整的配置（包含服务商、模型、URL 等）。复制 LLM 输出的 JSON 后，点击“从剪贴板粘贴并导入”即可一键生效。
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1814,7 +1762,7 @@ export default function SettingsModal() {
                         }}
                         onTouchEnd={clearLlmPromptTooltipTimer}
                         onTouchCancel={clearLlmPromptTooltipTimer}
-                        className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-medium text-gray-700 shadow-sm border border-gray-200/80 transition hover:bg-gray-50 hover:text-gray-900 dark:bg-white/[0.05] dark:border-white/[0.08] dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
+                        className="flex items-center gap-1.5 rounded-xl border border-blue-200/50 bg-white px-3 py-2 text-xs font-medium text-blue-600 shadow-sm transition hover:bg-blue-50 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20"
                       >
                         <LinkIcon className="h-3.5 w-3.5" />
                         复制生成提示词
@@ -1827,7 +1775,7 @@ export default function SettingsModal() {
                       type="button"
                       onClick={handleCustomProviderJsonPaste}
                       disabled={isImportingJson}
-                      className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-medium text-gray-700 shadow-sm border border-gray-200/80 transition hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/[0.05] dark:border-white/[0.08] dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
+                      className="flex items-center gap-1.5 rounded-xl border border-blue-200/50 bg-white px-3 py-2 text-xs font-medium text-blue-600 shadow-sm transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20"
                     >
                     {isImportingJson ? (
                       <>

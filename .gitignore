@@ -1,4 +1,5 @@
 node_modules/
 dist/
 dev-proxy.config.json
+.DS_Store
 .wrangler/

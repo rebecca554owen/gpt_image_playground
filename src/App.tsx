@@ -14,7 +14,6 @@ import ConfirmDialog from './components/ConfirmDialog'
 import Toast from './components/Toast'
 import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
-import SupportPromptModal from './components/SupportPromptModal'
 
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
@@ -62,7 +61,6 @@ export default function App() {
       <Lightbox />
       <SettingsModal />
       <ConfirmDialog />
-      <SupportPromptModal />
       <Toast />
       <MaskEditorModal />
       <ImageContextMenu />

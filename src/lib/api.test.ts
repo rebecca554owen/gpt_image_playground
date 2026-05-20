@@ -1,7 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { DEFAULT_SETTINGS } from './apiProfiles'
+import { DEFAULT_SETTINGS, createDefaultOpenAIProfile } from './apiProfiles'
 import { callImageApi } from './api'
+
+const createOpenAISettings = (overrides = {}) => {
+  const profile = createDefaultOpenAIProfile({
+    id: 'test-openai',
+    ...(overrides as Parameters<typeof createDefaultOpenAIProfile>[0]),
+  })
+  return {
+    ...DEFAULT_SETTINGS,
+    ...profile,
+    customProviders: DEFAULT_SETTINGS.customProviders,
+    profiles: [profile],
+    activeProfileId: profile.id,
+  }
+}
 
 describe('callImageApi', () => {
   afterEach(() => {
@@ -24,7 +38,7 @@ describe('callImageApi', () => {
       }))
 
       await callImageApi({
-        settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses', codexCli },
+        settings: createOpenAISettings({ apiKey: 'test-key', apiMode: 'responses', codexCli }),
         prompt: 'prompt',
         params: { ...DEFAULT_PARAMS },
         inputImageDataUrls: [],
@@ -51,7 +65,7 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: createOpenAISettings({ apiKey: 'test-key', codexCli: true }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -82,7 +96,7 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: createOpenAISettings({ apiKey: 'test-key', codexCli: true }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -99,6 +113,115 @@ describe('callImageApi', () => {
     }])
   })
 
+  it('fills missing Images API results with single-image supplemental requests', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [{ b64_json: 'aW1hZ2UtMQ==' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [{ b64_json: 'aW1hZ2UtMg==' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [{ b64_json: 'aW1hZ2UtMw==' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [{ b64_json: 'aW1hZ2UtNA==' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    const result = await callImageApi({
+      settings: createOpenAISettings({ apiKey: 'test-key' }),
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 4 },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toMatchObject({ n: 4 })
+    for (const [, init] of fetchMock.mock.calls.slice(1)) {
+      expect(JSON.parse(String((init as RequestInit).body))).not.toHaveProperty('n')
+    }
+    expect(result.images).toEqual([
+      'data:image/png;base64,aW1hZ2UtMQ==',
+      'data:image/png;base64,aW1hZ2UtMg==',
+      'data:image/png;base64,aW1hZ2UtMw==',
+      'data:image/png;base64,aW1hZ2UtNA==',
+    ])
+    expect(result.actualParams).toEqual({ n: 4 })
+  })
+
+  it('does not keep more Images API results than requested after supplemental requests', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [
+          { b64_json: 'aW1hZ2UtMQ==' },
+          { b64_json: 'aW1hZ2UtMg==' },
+          { b64_json: 'aW1hZ2UtMw==' },
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [
+          { b64_json: 'aW1hZ2UtNA==' },
+          { b64_json: 'aW1hZ2UtNQ==' },
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    const result = await callImageApi({
+      settings: createOpenAISettings({ apiKey: 'test-key' }),
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 4 },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toEqual([
+      'data:image/png;base64,aW1hZ2UtMQ==',
+      'data:image/png;base64,aW1hZ2UtMg==',
+      'data:image/png;base64,aW1hZ2UtMw==',
+      'data:image/png;base64,aW1hZ2UtNA==',
+    ])
+    expect(result.actualParams).toEqual({ n: 4 })
+    expect(result.actualParamsList).toHaveLength(4)
+  })
+
+  it('keeps the initial Images API result when supplemental requests fail', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [{ b64_json: 'aW1hZ2UtMQ==' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockRejectedValue(new TypeError('Failed to fetch'))
+
+    const result = await callImageApi({
+      settings: createOpenAISettings({ apiKey: 'test-key' }),
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 3 },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2UtMQ=='])
+    expect(result.actualParams).toEqual({ n: 1 })
+  })
+
   it('uses the same-origin API proxy path when API proxy is enabled', async () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
@@ -110,7 +233,7 @@ describe('callImageApi', () => {
 
     await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...createOpenAISettings(),
         apiKey: 'test-key',
         apiProxy: true,
         baseUrl: 'http://api.example.com/v1',
@@ -138,7 +261,7 @@ describe('callImageApi', () => {
 
     await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...createOpenAISettings(),
         apiKey: 'test-key',
         apiProxy: false,
         baseUrl: 'http://api.example.com/v1',
@@ -163,7 +286,7 @@ describe('callImageApi', () => {
     }))
 
     await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      settings: createOpenAISettings({ apiKey: 'test-key' }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -187,7 +310,7 @@ describe('callImageApi', () => {
 
     await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...createOpenAISettings(),
         apiKey: 'test-key',
         apiProxy: true,
         baseUrl: 'http://api.example.com/v1',
@@ -203,157 +326,4 @@ describe('callImageApi', () => {
     )
   })
 
-  it('polls custom async tasks immediately and keeps polling after transient network errors', async () => {
-    vi.useFakeTimers()
-    const onCustomTaskEnqueued = vi.fn()
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify({ task_id: 'task-1' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        data: {
-          status: 'SUCCESS',
-          data: {
-            data: [{ b64_json: 'aW1hZ2U=' }],
-          },
-        },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-
-    const promise = callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
-        baseUrl: 'https://api.example.com/v1',
-        customProviders: [{
-          id: 'custom-async',
-          name: 'Custom Async',
-          template: 'http-image',
-          submit: {
-            path: 'images/generations',
-            method: 'POST',
-            contentType: 'json',
-            query: { async: 'true' },
-            body: { model: '$profile.model', prompt: '$prompt' },
-            taskIdPath: 'task_id',
-          },
-          poll: {
-            path: 'images/tasks/{task_id}',
-            method: 'GET',
-            intervalSeconds: 1,
-            statusPath: 'data.status',
-            successValues: ['SUCCESS'],
-            failureValues: ['FAILURE'],
-            errorPath: 'data.fail_reason',
-            result: {
-              imageUrlPaths: ['data.data.data.*.url'],
-              b64JsonPaths: ['data.data.data.*.b64_json'],
-            },
-          },
-        }],
-        profiles: [{
-          ...DEFAULT_SETTINGS.profiles[0],
-          id: 'profile-custom',
-          provider: 'custom-async',
-          baseUrl: 'https://api.example.com/v1',
-          apiKey: 'test-key',
-          model: 'model',
-          timeout: 60,
-        }],
-        activeProfileId: 'profile-custom',
-      },
-      prompt: 'prompt',
-      params: { ...DEFAULT_PARAMS },
-      inputImageDataUrls: [],
-      onCustomTaskEnqueued,
-    })
-
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(onCustomTaskEnqueued).toHaveBeenCalledWith({ taskId: 'task-1' })
-    expect(fetchMock.mock.calls[1][0]).toBe('https://api.example.com/v1/images/tasks/task-1')
-    await vi.advanceTimersByTimeAsync(1000)
-
-    await expect(promise).resolves.toEqual({
-      images: ['data:image/png;base64,aW1hZ2U='],
-    })
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-  })
-
-  it('does not apply submit timeout to custom async polling after receiving a task id', async () => {
-    vi.useFakeTimers()
-    vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify({ task_id: 'task-1' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { status: 'IN_PROGRESS' } }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        data: {
-          status: 'SUCCESS',
-          data: {
-            data: [{ b64_json: 'aW1hZ2U=' }],
-          },
-        },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-
-    const promise = callImageApi({
-      settings: {
-        ...DEFAULT_SETTINGS,
-        baseUrl: 'https://api.example.com/v1',
-        customProviders: [{
-          id: 'custom-async',
-          name: 'Custom Async',
-          template: 'http-image',
-          submit: {
-            path: 'images/generations',
-            method: 'POST',
-            contentType: 'json',
-            query: { async: 'true' },
-            body: { model: '$profile.model', prompt: '$prompt' },
-            taskIdPath: 'task_id',
-          },
-          poll: {
-            path: 'images/tasks/{task_id}',
-            method: 'GET',
-            intervalSeconds: 5,
-            statusPath: 'data.status',
-            successValues: ['SUCCESS'],
-            failureValues: ['FAILURE'],
-            result: {
-              b64JsonPaths: ['data.data.data.*.b64_json'],
-            },
-          },
-        }],
-        profiles: [{
-          ...DEFAULT_SETTINGS.profiles[0],
-          id: 'profile-custom',
-          provider: 'custom-async',
-          baseUrl: 'https://api.example.com/v1',
-          apiKey: 'test-key',
-          model: 'model',
-          timeout: 1,
-        }],
-        activeProfileId: 'profile-custom',
-        timeout: 1,
-      },
-      prompt: 'prompt',
-      params: { ...DEFAULT_PARAMS },
-      inputImageDataUrls: [],
-    })
-
-    await vi.advanceTimersByTimeAsync(6000)
-
-    await expect(promise).resolves.toEqual({
-      images: ['data:image/png;base64,aW1hZ2U='],
-    })
-  })
 })

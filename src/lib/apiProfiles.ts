@@ -14,13 +14,15 @@ import type {
 } from '../types'
 import { readRuntimeEnv } from './runtimeEnv'
 
-const DEFAULT_BASE_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL) || 'https://api.openai.com/v1'
+const DEFAULT_BASE_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL) || 'https://gpt-agent.cc/v1'
 const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE) === 'true'
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
+export const DEFAULT_CUSTOM_PROVIDER_ID = 'custom-default'
+export const DEFAULT_CUSTOM_PROFILE_ID = 'custom-default-profile'
 export const DEFAULT_API_TIMEOUT = 600
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
@@ -48,6 +50,41 @@ const DEFAULT_EDIT_FILES: CustomProviderFileMapping[] = [
   { field: 'image[]', source: 'inputImages', array: true },
   { field: 'mask', source: 'mask' },
 ]
+
+function createDefaultCustomProvider(): CustomProviderDefinition {
+  return {
+    id: DEFAULT_CUSTOM_PROVIDER_ID,
+    name: '默认服务商',
+    template: 'http-image',
+    submit: {
+      path: DEFAULT_CUSTOM_PROVIDER_PATHS.generationPath,
+      method: 'POST',
+      contentType: 'json',
+      body: DEFAULT_GENERATE_BODY,
+      result: DEFAULT_OPENAI_RESULT,
+    },
+    editSubmit: {
+      path: DEFAULT_CUSTOM_PROVIDER_PATHS.editPath,
+      method: 'POST',
+      contentType: 'multipart',
+      body: DEFAULT_EDIT_BODY,
+      files: DEFAULT_EDIT_FILES,
+      result: DEFAULT_OPENAI_RESULT,
+    },
+  }
+}
+
+function isDefaultCustomProvider(provider: CustomProviderDefinition): boolean {
+  return provider.id === DEFAULT_CUSTOM_PROVIDER_ID &&
+    provider.name === '默认服务商' &&
+    provider.submit.path === DEFAULT_CUSTOM_PROVIDER_PATHS.generationPath &&
+    provider.submit.contentType === 'json' &&
+    JSON.stringify(provider.submit.body) === JSON.stringify(DEFAULT_GENERATE_BODY) &&
+    provider.editSubmit?.path === DEFAULT_CUSTOM_PROVIDER_PATHS.editPath &&
+    provider.editSubmit.contentType === 'multipart' &&
+    JSON.stringify(provider.editSubmit.body) === JSON.stringify(DEFAULT_EDIT_BODY) &&
+    !provider.poll
+}
 
 type ApiProfileProviderDraft = NonNullable<ApiProfile['providerDrafts']>[ApiProvider]
 
@@ -287,6 +324,22 @@ export function createDefaultFalProfile(overrides: Partial<ApiProfile> = {}): Ap
   }
 }
 
+function createDefaultCustomProfile(providerId: string, overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return {
+    id: DEFAULT_CUSTOM_PROFILE_ID,
+    name: '默认配置',
+    provider: providerId,
+    baseUrl: DEFAULT_BASE_URL,
+    apiKey: '',
+    model: DEFAULT_IMAGES_MODEL,
+    timeout: DEFAULT_API_TIMEOUT,
+    apiMode: 'images',
+    codexCli: false,
+    apiProxy: false,
+    ...overrides,
+  }
+}
+
 export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvider, customProvider?: CustomProviderDefinition): ApiProfile {
   const providerDrafts = {
     ...profile.providerDrafts,
@@ -375,18 +428,20 @@ function normalizeProviderDrafts(input: unknown, customProviderIds: Set<string>)
 
 export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfile>, customProviderIds = new Set<string>()): ApiProfile {
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
-  const rawProvider = typeof record.provider === 'string' ? record.provider : ''
-  const provider: ApiProvider = rawProvider === 'fal' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
-  const defaults = provider === 'fal' ? createDefaultFalProfile(fallback) : createDefaultOpenAIProfile(fallback)
+  void customProviderIds
+  const provider: ApiProvider = 'openai'
+  const defaults = createDefaultOpenAIProfile(fallback)
   const apiMode: ApiMode = record.apiMode === 'responses' ? 'responses' : 'images'
   const rawBaseUrl = typeof record.baseUrl === 'string' ? record.baseUrl : defaults.baseUrl
 
   return {
     ...defaults,
     id: typeof record.id === 'string' && record.id.trim() ? record.id : defaults.id,
-    name: typeof record.name === 'string' && record.name.trim() ? record.name : defaults.name,
+    name: typeof record.name === 'string' && record.name.trim()
+      ? (record.name === '默认配置' ? '默认' : record.name)
+      : defaults.name,
     provider,
-    baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL : rawBaseUrl,
+    baseUrl: rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
@@ -413,8 +468,9 @@ function validateImportedProfileRecord(input: unknown) {
 
 export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSettings {
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
-  const customProviders = normalizeCustomProviderDefinitions(record.customProviders)
-  const customProviderIds = new Set(customProviders.map((provider) => provider.id))
+  const rawCustomProviders = normalizeCustomProviderDefinitions(record.customProviders)
+  const hasMigratableDefaultCustomProvider = rawCustomProviders.some((provider) => isDefaultCustomProvider(provider))
+  const customProviderIds = new Set(rawCustomProviders.map((provider) => provider.id))
   const legacyProfile = createDefaultOpenAIProfile({
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : DEFAULT_BASE_URL,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : '',
@@ -428,10 +484,15 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   const profiles = Array.isArray(record.profiles) && record.profiles.length
     ? record.profiles.map((profile) => normalizeApiProfile(profile, undefined, customProviderIds))
     : [legacyProfile]
+  const normalizedProfiles = profiles.map((profile) => ({
+    ...profile,
+    id: hasMigratableDefaultCustomProvider && profile.id === DEFAULT_CUSTOM_PROFILE_ID ? DEFAULT_OPENAI_PROFILE_ID : profile.id,
+    provider: 'openai' as const,
+  }))
   const activeProfileId = typeof record.activeProfileId === 'string' && profiles.some((p) => p.id === record.activeProfileId)
-    ? record.activeProfileId
-    : profiles[0].id
-  const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0]
+    ? (hasMigratableDefaultCustomProvider && record.activeProfileId === DEFAULT_CUSTOM_PROFILE_ID ? DEFAULT_OPENAI_PROFILE_ID : record.activeProfileId)
+    : normalizedProfiles[0].id
+  const active = normalizedProfiles.find((p) => p.id === activeProfileId) ?? normalizedProfiles[0]
 
   return {
     baseUrl: active.baseUrl,
@@ -441,31 +502,33 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     apiMode: active.apiMode,
     codexCli: active.codexCli,
     apiProxy: active.apiProxy,
-    customProviders,
-    providerOrder: Array.isArray(record.providerOrder) ? record.providerOrder.map(String) : undefined,
+    customProviders: [],
+    providerOrder: undefined,
     clearInputAfterSubmit: typeof record.clearInputAfterSubmit === 'boolean' ? record.clearInputAfterSubmit : false,
     persistInputOnRestart: typeof record.persistInputOnRestart === 'boolean' ? record.persistInputOnRestart : true,
     reuseTaskApiProfileTemporarily: typeof record.reuseTaskApiProfileTemporarily === 'boolean' ? record.reuseTaskApiProfileTemporarily : false,
     alwaysShowRetryButton: typeof record.alwaysShowRetryButton === 'boolean' ? record.alwaysShowRetryButton : false,
     enterSubmit: typeof record.enterSubmit === 'boolean' ? record.enterSubmit : false,
-    profiles,
+    profiles: normalizedProfiles,
     activeProfileId,
   }
 }
 
 export function getCustomProviderDefinition(settings: Partial<AppSettings> | unknown, provider: ApiProvider): CustomProviderDefinition | null {
-  const normalized = normalizeSettings(settings)
-  return normalized.customProviders.find((item) => item.id === provider) ?? null
+  void settings
+  void provider
+  return null
 }
 
 export function getApiProviderLabel(settings: Partial<AppSettings> | unknown, provider: ApiProvider): string {
-  if (provider === 'fal') return 'fal.ai'
+  void settings
   if (provider === 'openai') return 'OpenAI'
-  return getCustomProviderDefinition(settings, provider)?.name ?? provider
+  return 'OpenAI'
 }
 
 export function isOpenAICompatibleProvider(settings: Partial<AppSettings> | unknown, provider: ApiProvider): boolean {
-  return provider === 'openai' || Boolean(getCustomProviderDefinition(settings, provider))
+  void settings
+  return provider === 'openai'
 }
 
 export interface ImportedProviderSettings {
@@ -719,6 +782,8 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   codexCli: false,
   apiProxy: DEFAULT_OPENAI_API_PROXY,
   customProviders: [],
+  profiles: [createDefaultOpenAIProfile()],
+  activeProfileId: DEFAULT_OPENAI_PROFILE_ID,
   clearInputAfterSubmit: false,
   persistInputOnRestart: true,
   reuseTaskApiProfileTemporarily: false,
