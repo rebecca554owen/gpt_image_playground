@@ -160,7 +160,7 @@ function isPristineNewOpenAIProfile(profile: ApiProfile) {
     profile.model === DEFAULT_IMAGES_MODEL &&
     profile.timeout === DEFAULT_SETTINGS.timeout &&
     profile.apiMode === 'images' &&
-    profile.codexCli === false &&
+    profile.codexCli === DEFAULT_SETTINGS.codexCli &&
     profile.apiProxy === false
 }
 

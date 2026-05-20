@@ -141,7 +141,7 @@ describe('callImageApi', () => {
       }))
 
     const result = await callImageApi({
-      settings: createOpenAISettings({ apiKey: 'test-key' }),
+      settings: createOpenAISettings({ apiKey: 'test-key', codexCli: false }),
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS, n: 4 },
       inputImageDataUrls: [],

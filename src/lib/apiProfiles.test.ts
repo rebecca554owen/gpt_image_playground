@@ -18,6 +18,7 @@ describe('OpenAI-only API profiles', () => {
       id: DEFAULT_OPENAI_PROFILE_ID,
       provider: 'openai',
       model: DEFAULT_IMAGES_MODEL,
+      codexCli: true,
     })
     expect(DEFAULT_SETTINGS.activeProfileId).toBe(DEFAULT_OPENAI_PROFILE_ID)
   })

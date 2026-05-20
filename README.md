@@ -172,6 +172,8 @@ $env:VITE_DEFAULT_API_URL="https://gpt-agent.cc/v1"; npm run deploy:cf
 > ⚠️ **安全警告**：开启 API 代理后，任何人都能将你的服务器作为代理来请求目标 API。建议仅在有访问控制（如 IP 白名单）或本地网络中开启。
 
 > 💡 **兼容迁移**：旧版本中的 `API_URL` 已拆分为 `DEFAULT_API_URL` 和 `API_PROXY_URL`。容器启动时会自动将遗留的 `API_URL` 作为两个新变量的兜底值，实现无缝兼容。建议更新配置文件，逐步迁移至新变量。
+>
+> 🔧 如果上游是 HTTPS 域名，内置代理会开启 SNI 并把 `Host` 按上游域名转发，避免因为 TLS `unrecognized name` 导致 502。
 
 **1. Docker CLI 示例**
 
