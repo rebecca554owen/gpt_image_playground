@@ -302,7 +302,7 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     model: DEFAULT_IMAGES_MODEL,
     timeout: DEFAULT_API_TIMEOUT,
     apiMode: 'images',
-    codexCli: false,
+    codexCli: true,
     apiProxy: DEFAULT_OPENAI_API_PROXY,
     ...overrides,
   }
@@ -625,7 +625,7 @@ function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
     profile.model === DEFAULT_IMAGES_MODEL &&
     profile.timeout === DEFAULT_API_TIMEOUT &&
     profile.apiMode === 'images' &&
-    profile.codexCli === false &&
+    profile.codexCli === true &&
     profile.apiProxy === DEFAULT_OPENAI_API_PROXY
 }
 
@@ -779,7 +779,7 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   model: DEFAULT_IMAGES_MODEL,
   timeout: DEFAULT_API_TIMEOUT,
   apiMode: 'images',
-  codexCli: false,
+  codexCli: true,
   apiProxy: DEFAULT_OPENAI_API_PROXY,
   customProviders: [],
   profiles: [createDefaultOpenAIProfile()],
