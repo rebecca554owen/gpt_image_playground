@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
-import { callAgentConversationTitleApi, callAgentResponsesApi } from './agentApi'
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle } from './agentApi'
 
 describe('callAgentResponsesApi', () => {
   afterEach(() => {
@@ -43,6 +43,7 @@ describe('callAgentResponsesApi', () => {
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
     expect(body.tools[0].partial_images).toBe(2)
+    expect(body.tool_choice).toBeUndefined()
     expect(textDeltas).toEqual(['Hel', 'lo'])
     expect(result).toMatchObject({
       responseId: 'resp_1',
@@ -108,6 +109,40 @@ describe('callAgentResponsesApi', () => {
       actualParams: {},
     }])
   })
+
+  it.each([false, true])(
+    'sets batch image tool_choice only outside Codex CLI mode: %s',
+    async (codexCli) => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        output: [{
+          type: 'image_generation_call',
+          id: 'ig_batch',
+          result: 'aW1hZ2U=',
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      const profile = createDefaultOpenAIProfile({
+        apiKey: 'test-key',
+        apiMode: 'responses',
+        codexCli,
+      })
+
+      await callBatchImageSingle({
+        profile,
+        params: DEFAULT_PARAMS,
+        batchItemId: 'batch-1',
+        prompt: 'prompt',
+        referenceImageDataUrls: [],
+      })
+
+      const [, init] = fetchMock.mock.calls[0]
+      const body = JSON.parse(String((init as RequestInit).body))
+      expect(body.tools).toHaveLength(1)
+      expect(body.tool_choice).toBe(codexCli ? undefined : 'required')
+    },
+  )
 
   it('stops reading a stream when the caller aborts after output starts', async () => {
     const streamBody = [

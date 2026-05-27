@@ -36,9 +36,14 @@ function pickUrlSettingsPayload(value: unknown): unknown | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
   return {
-    customProviders: record.customProviders,
-    profiles: record.profiles,
+    profiles: Array.isArray(record.profiles)
+      ? record.profiles.map((profile) => isRecord(profile) ? { ...profile, provider: 'openai' } : profile)
+      : record.profiles,
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function getUrlSettingsPayload(searchParams: URLSearchParams): unknown | null {
@@ -63,7 +68,6 @@ function activateFirstImportedProfile(settings: AppSettings, importedSettings: u
   if (!Array.isArray(record.profiles) || record.profiles.length === 0) return settings
 
   const imported = normalizeSettings({
-    customProviders: record.customProviders,
     profiles: record.profiles,
   })
   const importedProfile = imported.profiles[0]

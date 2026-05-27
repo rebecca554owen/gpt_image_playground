@@ -2,8 +2,6 @@ import { useEffect } from 'react'
 import { initStore } from './store'
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
-import { mergeImportedSettings } from './lib/apiProfiles'
-import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/customProviderConfigUrl'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import Header from './components/Header'
 import SearchBar from './components/SearchBar'
@@ -19,8 +17,6 @@ import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
-
-let customProviderConfigUrlImportStarted = false
 
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
@@ -40,20 +36,6 @@ export default function App() {
       const nextSearch = searchParams.toString()
       const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
       window.history.replaceState(null, '', nextUrl)
-    }
-
-    const customProviderConfigUrl = getCustomProviderConfigUrl()
-    if (customProviderConfigUrl && !customProviderConfigUrlImportStarted) {
-      customProviderConfigUrlImportStarted = true
-      void loadCustomProviderSettingsFromUrl(customProviderConfigUrl)
-        .then((importedSettings) => {
-          if (!importedSettings) return
-          const state = useStore.getState()
-          state.setSettings(mergeImportedSettings(state.settings, importedSettings))
-        })
-        .catch((error) => {
-          console.warn('Failed to import custom provider config URL:', error)
-        })
     }
 
     initStore()

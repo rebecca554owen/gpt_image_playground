@@ -1028,7 +1028,9 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       model: profile.model,
       input: createResponsesInput(prompt, inputImageDataUrls),
       tools: [createResponsesImageTool(params, inputImageDataUrls.length > 0, profile, opts.maskDataUrl)],
-      tool_choice: 'required',
+    }
+    if (!profile.codexCli) {
+      body.tool_choice = 'required'
     }
     if (profile.streamImages) {
       body.stream = true

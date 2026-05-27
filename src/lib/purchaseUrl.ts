@@ -10,3 +10,14 @@ export function getPurchaseUrl(baseUrl: string): string {
     return baseUrl
   }
 }
+
+export function getPurchaseUrlLabel(baseUrl: string): string {
+  const purchaseUrl = getPurchaseUrl(baseUrl)
+
+  try {
+    const url = new URL(purchaseUrl)
+    return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
+  } catch {
+    return purchaseUrl
+  }
+}

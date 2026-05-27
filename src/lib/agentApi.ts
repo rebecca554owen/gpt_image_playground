@@ -801,7 +801,9 @@ export async function callBatchImageSingle(opts: {
       model: profile.model,
       input,
       tools: [tool],
-      tool_choice: 'required',
+    }
+    if (!profile.codexCli) {
+      body.tool_choice = 'required'
     }
     if (profile.streamImages) {
       body.stream = true

@@ -158,12 +158,12 @@ describe('URL settings params', () => {
       ...buildSettingsFromUrlParams(DEFAULT_SETTINGS, params),
     })
 
-    expect(next.customProviders).toHaveLength(1)
-    expect(next.customProviders[0]).toMatchObject({ id: 'custom-json', name: 'Custom JSON' })
+    expect(next.customProviders).toEqual([])
     expect(next.activeProfileId).toBe('custom-profile')
     expect(next.profiles[0]).toMatchObject({
       id: 'custom-profile',
-      provider: 'custom-json',
+      provider: 'openai',
+      baseUrl: 'https://api.example.com/v1',
       apiKey: 'custom-key',
       model: 'custom-model',
     })
@@ -217,7 +217,7 @@ describe('URL settings params', () => {
 
     expect(next.activeProfileId).not.toBe('current-openai')
     expect(activeProfile).toMatchObject({
-      provider: 'custom-json',
+      provider: 'openai',
       baseUrl: 'https://api.example.com/v1',
       apiKey: 'custom-key',
       model: 'custom-model',
@@ -260,12 +260,11 @@ describe('URL settings params', () => {
       ...buildSettingsFromUrlParams(DEFAULT_SETTINGS, params),
     })
 
-    expect(next.customProviders).toHaveLength(1)
-    expect(next.customProviders[0]).toMatchObject({ id: 'wrapped-custom', name: 'Wrapped Custom' })
+    expect(next.customProviders).toEqual([])
     expect(next.profiles).toHaveLength(1)
     expect(next.profiles[0]).toMatchObject({
       id: 'wrapped-profile',
-      provider: 'wrapped-custom',
+      provider: 'openai',
       baseUrl: 'https://wrapped.example.com/v1',
       apiKey: 'wrapped-key',
       model: 'wrapped-model',
