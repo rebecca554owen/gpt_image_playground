@@ -6,6 +6,7 @@ import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboar
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { downloadImageIds } from '../lib/downloadImages'
+import { normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
 import TaskCard from './TaskCard'
 import ViewportTooltip from './ViewportTooltip'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -815,7 +816,7 @@ export default function AgentWorkspace() {
       if ((selection.anchorNode && target.contains(selection.anchorNode)) || (selection.focusNode && target.contains(selection.focusNode))) return
     }
 
-    void handleCopyMessage(content, '完整报错已复制', '复制完整报错失败')
+    void handleCopyMessage(normalizeImageApiErrorDisplayText(content), '完整报错已复制', '复制完整报错失败')
   }
 
   return (
@@ -1043,7 +1044,7 @@ export default function AgentWorkspace() {
                         onClick={(e) => handleErrorCopyClick(e, message.content)}
                       >
                         {(() => {
-                          const content = message.content.replace(/^请求失败：/, '');
+                          const content = normalizeImageApiErrorDisplayText(message.content).replace(/^请求失败：/, '');
                           const [mainErr, ...hints] = content.split('\n提示：');
                           return (
                             <>

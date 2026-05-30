@@ -144,6 +144,17 @@ export function normalizeImageApiErrorMessage(message: string): string {
   return message
 }
 
+export function normalizeImageApiErrorDisplayText(message: string): string {
+  const requestFailurePrefix = '请求失败：'
+  const prefix = message.startsWith(requestFailurePrefix) ? requestFailurePrefix : ''
+  const body = prefix ? message.slice(prefix.length) : message
+  const [mainMessage, ...hints] = body.split('\n提示：')
+  const normalizedMainMessage = normalizeImageApiErrorMessage(mainMessage)
+
+  if (hints.length === 0) return `${prefix}${normalizedMainMessage}`
+  return `${prefix}${normalizedMainMessage}\n提示：${hints.join('\n提示：')}`
+}
+
 async function probeNoCorsReachability(url: string, timeoutMs = 8000): Promise<'opaque' | 'reachable' | 'failed'> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)

@@ -10,6 +10,7 @@ import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { downloadImageIds } from '../lib/downloadImages'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
+import { normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
 import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
 
 import ViewportTooltip from './ViewportTooltip'
@@ -223,6 +224,7 @@ export default function DetailModal() {
   const streamPreviewLen = streamPreviewItems.length
   const currentStreamPreviewSrc = activeStreamPreviewSrc
   const streamPartialImageIds = task.streamPartialImageIds ?? []
+  const displayError = normalizeImageApiErrorDisplayText(task.error || '生成失败')
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
@@ -276,9 +278,8 @@ export default function DetailModal() {
   }
 
   const handleCopyError = async () => {
-    const errorText = task.error || '生成失败'
     try {
-      await copyTextToClipboard(errorText)
+      await copyTextToClipboard(displayError)
       showToast('完整报错已复制', 'success')
     } catch (err) {
       showToast(getClipboardFailureMessage('复制报错失败', err), 'error')
@@ -599,7 +600,7 @@ export default function DetailModal() {
                   WebkitLineClamp: 10,
                 }}
               >
-                {task.error || '生成失败'}
+                {displayError}
               </p>
               <div className="mt-3 flex items-center justify-center gap-2">
                 <div className="relative group">

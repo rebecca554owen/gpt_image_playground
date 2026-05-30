@@ -3,6 +3,7 @@ import {
   getApiErrorMessage,
   IMAGE_UNSAFE_ERROR_MESSAGE,
   INVALID_IMAGE_SIZE_ERROR_MESSAGE,
+  normalizeImageApiErrorDisplayText,
   normalizeImageApiErrorMessage,
   UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE,
 } from './imageApiShared'
@@ -42,5 +43,11 @@ describe('image API error messages', () => {
     expect(normalizeImageApiErrorMessage(
       "status_code=400, Invalid size '4096x4096'.",
     )).toBe(INVALID_IMAGE_SIZE_ERROR_MESSAGE)
+  })
+
+  it('normalizes request failure display text while preserving hints', () => {
+    expect(normalizeImageApiErrorDisplayText(
+      '请求失败：status_code=503, poll failed: 451 {"error_code":"image_unsafe","message":"generated images appear to be unsafe. Try modifying the prompts or the seeds."}\n提示：请求立即失败，请检查 API 代理服务是否正常运行。',
+    )).toBe(`请求失败：${IMAGE_UNSAFE_ERROR_MESSAGE}\n提示：请求立即失败，请检查 API 代理服务是否正常运行。`)
   })
 })

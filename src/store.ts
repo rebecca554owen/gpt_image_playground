@@ -43,7 +43,7 @@ import {
 import { callImageApi } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage, type BatchImageCallResult } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
-import { IMAGE_FETCH_CORS_HINT, normalizeImageApiErrorMessage } from './lib/imageApiShared'
+import { IMAGE_FETCH_CORS_HINT, normalizeImageApiErrorDisplayText, normalizeImageApiErrorMessage } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
@@ -408,7 +408,7 @@ function normalizeAgentRound(value: unknown, fallbackIndex: number): AgentRound 
     ...(Array.isArray(round.responseOutput) ? { responseOutput: round.responseOutput } : {}),
     status,
     error: status === 'error'
-      ? typeof round.error === 'string' ? round.error : '上次请求已中断'
+      ? typeof round.error === 'string' ? normalizeImageApiErrorDisplayText(round.error) : '上次请求已中断'
       : null,
     createdAt: typeof round.createdAt === 'number' ? round.createdAt : Date.now(),
     finishedAt: typeof round.finishedAt === 'number' ? round.finishedAt : null,
@@ -425,7 +425,9 @@ function normalizeAgentMessage(value: unknown): AgentMessage | null {
   return {
     id: message.id,
     role: message.role,
-    content: typeof message.content === 'string' ? message.content : '',
+    content: typeof message.content === 'string' && message.role === 'assistant' && message.content.startsWith('请求失败：')
+      ? normalizeImageApiErrorDisplayText(message.content)
+      : typeof message.content === 'string' ? message.content : '',
     roundId: message.roundId,
     ...(Array.isArray(message.inputImageIds) ? { inputImageIds: normalizeStringArray(message.inputImageIds) } : {}),
     maskTargetImageId: typeof message.maskTargetImageId === 'string' ? message.maskTargetImageId : null,
@@ -3721,7 +3723,7 @@ async function executeAgentRound(
       return
     }
 
-    let message = err instanceof Error ? err.message : String(err)
+    let message = normalizeImageApiErrorMessage(err instanceof Error ? err.message : String(err))
     const usesApiProxy = activeProfile.apiProxy ?? requestSettings.apiProxy
     const networkErrorHint = getApiRequestNetworkErrorHint(err, startedAt, usesApiProxy, activeProfile)
     if (networkErrorHint && !message.includes(IMAGE_FETCH_CORS_HINT)) {
