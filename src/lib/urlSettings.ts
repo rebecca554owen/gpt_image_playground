@@ -7,17 +7,20 @@ import {
   findEquivalentApiProfile,
   mergeImportedSettings,
   normalizeSettings,
+  normalizeStreamPartialImages,
 } from './apiProfiles'
 
-const URL_SETTING_KEYS = ['settings', 'apiUrl', 'apiKey', 'codexCli', 'apiMode', 'model']
+const URL_SETTING_KEYS = ['settings', 'apiUrl', 'apiKey', 'codexCli', 'apiMode', 'model', 'streamImages', 'streamPartialImages']
 
-function getProfileDedupKey(profile: Pick<AppSettings['profiles'][number], 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'apiMode'>) {
+function getProfileDedupKey(profile: Pick<AppSettings['profiles'][number], 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'apiMode' | 'streamImages' | 'streamPartialImages'>) {
   return JSON.stringify([
     profile.provider,
     profile.baseUrl.trim().replace(/\/+$/, '').toLowerCase(),
     profile.apiKey.trim(),
     profile.model.trim(),
     profile.apiMode,
+    profile.streamImages === true,
+    profile.streamPartialImages ?? 0,
   ])
 }
 
@@ -33,9 +36,14 @@ function pickUrlSettingsPayload(value: unknown): unknown | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
   return {
-    customProviders: record.customProviders,
-    profiles: record.profiles,
+    profiles: Array.isArray(record.profiles)
+      ? record.profiles.map((profile) => isRecord(profile) ? { ...profile, provider: 'openai' } : profile)
+      : record.profiles,
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function getUrlSettingsPayload(searchParams: URLSearchParams): unknown | null {
@@ -60,7 +68,6 @@ function activateFirstImportedProfile(settings: AppSettings, importedSettings: u
   if (!Array.isArray(record.profiles) || record.profiles.length === 0) return settings
 
   const imported = normalizeSettings({
-    customProviders: record.customProviders,
     profiles: record.profiles,
   })
   const importedProfile = imported.profiles[0]
@@ -86,9 +93,11 @@ export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings>
   const codexCliParam = searchParams.get('codexCli')
   const apiModeParam = searchParams.get('apiMode')
   const modelParam = searchParams.get('model')
+  const streamImagesParam = searchParams.get('streamImages')
+  const streamPartialImagesParam = searchParams.get('streamPartialImages')
   const apiMode: ApiMode | undefined = apiModeParam === 'images' || apiModeParam === 'responses' ? apiModeParam : undefined
 
-  const hasLegacyOpenAIParams = apiUrlParam !== null || apiKeyParam !== null || codexCliParam !== null || apiMode !== undefined || modelParam !== null
+  const hasLegacyOpenAIParams = apiUrlParam !== null || apiKeyParam !== null || codexCliParam !== null || apiMode !== undefined || modelParam !== null || streamImagesParam !== null || streamPartialImagesParam !== null
   const settings = importedSettings == null
     ? normalizeSettings(currentSettings)
     : activateFirstImportedProfile(mergeImportedSettings(currentSettings, importedSettings), importedSettings)
@@ -105,6 +114,8 @@ export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings>
     if (apiKeyParam !== null) profile.apiKey = apiKeyParam.trim()
     if (modelParam !== null && modelParam.trim()) profile.model = modelParam.trim()
     if (codexCliParam !== null) profile.codexCli = codexCliParam.trim().toLowerCase() === 'true'
+    if (streamImagesParam !== null) profile.streamImages = streamImagesParam.trim().toLowerCase() === 'true'
+    if (streamPartialImagesParam !== null) profile.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
 
     const existingProfile = settings.profiles.find((item) => getProfileDedupKey(item) === getProfileDedupKey(profile))
     if (existingProfile) {

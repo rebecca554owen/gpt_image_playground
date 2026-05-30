@@ -6,6 +6,7 @@ import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigration
 import Header from './components/Header'
 import SearchBar from './components/SearchBar'
 import TaskGrid from './components/TaskGrid'
+import AgentWorkspace from './components/AgentWorkspace'
 import InputBar from './components/InputBar'
 import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
@@ -14,10 +15,14 @@ import ConfirmDialog from './components/ConfirmDialog'
 import Toast from './components/Toast'
 import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
+import SupportPromptModal from './components/SupportPromptModal'
+import { useGlobalClickSuppression } from './lib/clickSuppression'
 
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
+  const appMode = useStore((s) => s.appMode)
   useDockerApiUrlMigrationNotice()
+  useGlobalClickSuppression()
 
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search)
@@ -50,17 +55,22 @@ export default function App() {
   return (
     <>
       <Header />
-      <main data-home-main data-drag-select-surface className="pb-48">
-        <div className="safe-area-x max-w-7xl mx-auto">
-          <SearchBar />
-          <TaskGrid />
-        </div>
-      </main>
+      {appMode === 'agent' ? (
+        <AgentWorkspace />
+      ) : (
+        <main data-home-main data-drag-select-surface className="pb-48">
+          <div className="safe-area-x max-w-7xl mx-auto">
+            <SearchBar />
+            <TaskGrid />
+          </div>
+        </main>
+      )}
       <InputBar />
       <DetailModal />
       <Lightbox />
       <SettingsModal />
       <ConfirmDialog />
+      <SupportPromptModal />
       <Toast />
       <MaskEditorModal />
       <ImageContextMenu />
