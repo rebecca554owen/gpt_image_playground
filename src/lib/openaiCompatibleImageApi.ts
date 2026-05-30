@@ -596,7 +596,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       for (let i = 0; i < imageBlobs.length; i++) {
         const blob = imageBlobs[i]
         const ext = blob.type.split('/')[1] || 'png'
-        formData.append('image[]', blob, `input-${i + 1}.${ext}`)
+        formData.append('image', blob, `input-${i + 1}.${ext}`)
       }
 
       if (maskBlob) {

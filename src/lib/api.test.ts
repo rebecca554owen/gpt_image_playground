@@ -465,6 +465,43 @@ describe('callImageApi', () => {
     )
   })
 
+  it('sends edit uploads with repeated image multipart fields', async () => {
+    const realFetch = globalThis.fetch
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url
+      if (url.startsWith('data:')) return realFetch(input, init)
+
+      return new Response(JSON.stringify({
+        data: [{ b64_json: 'ZWRpdA==' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        codexCli: false,
+        streamImages: false,
+      },
+      prompt: 'edit prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: ['data:image/png;base64,aW1hZ2U='],
+    })
+
+    const apiCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/images/edits'))
+    expect(apiCall).toBeDefined()
+    const body = (apiCall?.[1] as RequestInit).body as FormData
+    expect(body.getAll('image')).toHaveLength(1)
+    expect(body.getAll('image[]')).toHaveLength(0)
+  })
+
   it('uses the same-origin API proxy path for sync custom providers', async () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({

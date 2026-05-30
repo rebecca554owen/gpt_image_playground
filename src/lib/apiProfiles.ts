@@ -54,7 +54,7 @@ const DEFAULT_OPENAI_RESULT: CustomProviderResultMapping = {
   b64JsonPaths: ['data.*.b64_json'],
 }
 const DEFAULT_EDIT_FILES: CustomProviderFileMapping[] = [
-  { field: 'image[]', source: 'inputImages', array: true },
+  { field: 'image', source: 'inputImages', array: true },
   { field: 'mask', source: 'mask' },
 ]
 
