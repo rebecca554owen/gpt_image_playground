@@ -107,6 +107,7 @@ async function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> 
 export const IMAGE_FETCH_CORS_HINT = ' 可点链接按钮复制结果链接，或尝试开启「返回 Base64 图片数据」避免此问题。'
 export const IMAGE_UNSAFE_ERROR_MESSAGE = '生成结果触发安全审核，请调整提示词或参考图后重试。'
 export const UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE = '上游服务没有返回图片结果，请稍后重试或调整提示词。'
+export const INVALID_IMAGE_SIZE_ERROR_MESSAGE = '图片尺寸超出服务商限制，请改小尺寸后重试。'
 
 function payloadIncludes(value: unknown, pattern: RegExp): boolean {
   if (typeof value === 'string') return pattern.test(value)
@@ -117,6 +118,20 @@ function payloadIncludes(value: unknown, pattern: RegExp): boolean {
   }
 }
 
+function getInvalidImageSizeErrorMessage(message: string): string | undefined {
+  if (!/Invalid size|longest edge.*less than or equal to/i.test(message)) return undefined
+
+  const sizeMatch = message.match(/Invalid size\s*['"]?(\d+)\s*[xX×]\s*(\d+)['"]?/i)
+  const maxEdgeMatch = message.match(/longest edge.*?less than or equal to\s*(\d+)/i)
+  if (sizeMatch && maxEdgeMatch) {
+    return `图片尺寸 ${sizeMatch[1]}x${sizeMatch[2]} 超出服务商限制，最长边需不超过 ${maxEdgeMatch[1]}px，请改小尺寸后重试。`
+  }
+  if (maxEdgeMatch) {
+    return `图片尺寸超出服务商限制，最长边需不超过 ${maxEdgeMatch[1]}px，请改小尺寸后重试。`
+  }
+  return INVALID_IMAGE_SIZE_ERROR_MESSAGE
+}
+
 export function normalizeImageApiErrorMessage(message: string): string {
   if (payloadIncludes(message, /\bimage_unsafe\b|generated images appear to be unsafe/i)) {
     return IMAGE_UNSAFE_ERROR_MESSAGE
@@ -124,6 +139,8 @@ export function normalizeImageApiErrorMessage(message: string): string {
   if (payloadIncludes(message, /upstream did not return image output/i)) {
     return UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE
   }
+  const invalidSizeMessage = getInvalidImageSizeErrorMessage(message)
+  if (invalidSizeMessage) return invalidSizeMessage
   return message
 }
 

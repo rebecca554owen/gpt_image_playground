@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   getApiErrorMessage,
   IMAGE_UNSAFE_ERROR_MESSAGE,
+  INVALID_IMAGE_SIZE_ERROR_MESSAGE,
   normalizeImageApiErrorMessage,
   UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE,
 } from './imageApiShared'
@@ -29,5 +30,17 @@ describe('image API error messages', () => {
     expect(normalizeImageApiErrorMessage(
       'status_code=502, upstream did not return image output',
     )).toBe(UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE)
+  })
+
+  it('normalizes invalid image size errors with limit details', () => {
+    expect(normalizeImageApiErrorMessage(
+      "status_code=400, Invalid size '4096x4096'. The longest edge must be less than or equal to 3840.",
+    )).toBe('图片尺寸 4096x4096 超出服务商限制，最长边需不超过 3840px，请改小尺寸后重试。')
+  })
+
+  it('normalizes generic invalid image size errors', () => {
+    expect(normalizeImageApiErrorMessage(
+      "status_code=400, Invalid size '4096x4096'.",
+    )).toBe(INVALID_IMAGE_SIZE_ERROR_MESSAGE)
   })
 })
