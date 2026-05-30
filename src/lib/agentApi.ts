@@ -1,6 +1,6 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
-import { getApiErrorMessage, MIME_MAP, normalizeBase64Image, pickActualParams } from './imageApiShared'
+import { getApiErrorMessage, MIME_MAP, normalizeBase64Image, normalizeImageApiErrorMessage, pickActualParams } from './imageApiShared'
 
 export interface AgentApiMessage {
   role: 'user' | 'assistant'
@@ -243,12 +243,12 @@ function getStreamEventErrorMessage(event: Record<string, unknown>): string | nu
   const error = event.error
   if (isRecordValue(error)) {
     const message = getStringValue(error, 'message')
-    if (message) return message
+    if (message) return normalizeImageApiErrorMessage(message)
   }
-  if (typeof error === 'string' && error.trim()) return error
+  if (typeof error === 'string' && error.trim()) return normalizeImageApiErrorMessage(error)
 
   const type = getStringValue(event, 'type')
-  if (type?.endsWith('.failed')) return getStringValue(event, 'message') ?? 'Agent 流式请求失败'
+  if (type?.endsWith('.failed')) return normalizeImageApiErrorMessage(getStringValue(event, 'message') ?? 'Agent 流式请求失败')
   return null
 }
 

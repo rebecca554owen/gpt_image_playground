@@ -105,6 +105,27 @@ async function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> 
 }
 
 export const IMAGE_FETCH_CORS_HINT = ' 可点链接按钮复制结果链接，或尝试开启「返回 Base64 图片数据」避免此问题。'
+export const IMAGE_UNSAFE_ERROR_MESSAGE = '生成结果触发安全审核，请调整提示词或参考图后重试。'
+export const UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE = '上游服务没有返回图片结果，请稍后重试或调整提示词。'
+
+function payloadIncludes(value: unknown, pattern: RegExp): boolean {
+  if (typeof value === 'string') return pattern.test(value)
+  try {
+    return pattern.test(JSON.stringify(value))
+  } catch {
+    return false
+  }
+}
+
+export function normalizeImageApiErrorMessage(message: string): string {
+  if (payloadIncludes(message, /\bimage_unsafe\b|generated images appear to be unsafe/i)) {
+    return IMAGE_UNSAFE_ERROR_MESSAGE
+  }
+  if (payloadIncludes(message, /upstream did not return image output/i)) {
+    return UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE
+  }
+  return message
+}
 
 async function probeNoCorsReachability(url: string, timeoutMs = 8000): Promise<'opaque' | 'reachable' | 'failed'> {
   const controller = new AbortController()
@@ -164,6 +185,9 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
     else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
     else if (typeof errJson.error === 'string') errorMsg = errJson.error
     else if (errJson.message) errorMsg = errJson.message
+    if (payloadIncludes(errJson, /\bimage_unsafe\b|generated images appear to be unsafe/i)) {
+      return IMAGE_UNSAFE_ERROR_MESSAGE
+    }
   } catch {
     try {
       errorMsg = await response.text()
@@ -171,7 +195,7 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
       /* ignore */
     }
   }
-  return errorMsg
+  return normalizeImageApiErrorMessage(errorMsg)
 }
 
 export function pickActualParams(source: unknown): Partial<TaskParams> {

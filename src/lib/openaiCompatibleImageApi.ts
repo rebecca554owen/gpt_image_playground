@@ -15,6 +15,7 @@ import {
   mergeActualParams,
   MIME_MAP,
   normalizeBase64Image,
+  normalizeImageApiErrorMessage,
   pickActualParams,
 } from './imageApiShared'
 
@@ -108,13 +109,13 @@ function getStreamEventErrorMessage(event: Record<string, unknown>): string | nu
   const error = event.error
   if (isRecordValue(error)) {
     const message = getStringValue(error, 'message')
-    if (message) return message
+    if (message) return normalizeImageApiErrorMessage(message)
   }
-  if (typeof error === 'string' && error.trim()) return error
+  if (typeof error === 'string' && error.trim()) return normalizeImageApiErrorMessage(error)
 
   const type = getStringValue(event, 'type')
   if (type?.endsWith('.failed')) {
-    return getStringValue(event, 'message') ?? '流式请求失败'
+    return normalizeImageApiErrorMessage(getStringValue(event, 'message') ?? '流式请求失败')
   }
   return null
 }
@@ -903,7 +904,7 @@ async function pollCustomTaskResult(
     const state = getTaskState(taskPayload, poll)
     if (state === 'failure') {
       const message = getByPath(taskPayload, poll.errorPath) || getByPath(taskPayload, 'message') || getByPath(taskPayload, 'data.fail_reason') || getByPath(taskPayload, 'error.message')
-      throw new Error(typeof message === 'string' && message.trim() ? message : '异步任务失败')
+      throw new Error(normalizeImageApiErrorMessage(typeof message === 'string' && message.trim() ? message : '异步任务失败'))
     }
     if (state === 'success') {
       try {
