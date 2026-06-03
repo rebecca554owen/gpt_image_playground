@@ -465,6 +465,54 @@ describe('callImageApi', () => {
     )
   })
 
+  it('retries transient Images API upstream parse errors before succeeding', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: "invalid character 'e' looking for beginning of value" },
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: [{ b64_json: 'cmV0cmllZA==' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    const resultPromise = callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    await vi.advanceTimersByTimeAsync(1000)
+    const result = await resultPromise
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result.images).toEqual(['data:image/png;base64,cmV0cmllZA=='])
+  })
+
+  it('does not retry image safety audit failures', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'The generated images appear to be unsafe. Try modifying the prompts or the seeds.' },
+    }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('生成结果触发安全审核')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('sends edit uploads with repeated image multipart fields', async () => {
     const realFetch = globalThis.fetch
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

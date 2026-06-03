@@ -20,9 +20,102 @@ import {
 } from './imageApiShared'
 
 const PROMPT_REWRITE_GUARD_PREFIX = 'Use the following text as the complete prompt. Do not rewrite it:'
+const MAX_TRANSIENT_IMAGE_API_ATTEMPTS = 3
+const TRANSIENT_IMAGE_API_RETRY_DELAYS_MS = [1000, 2500]
+
+type ImageApiError = Error & { httpStatus?: number; rawImageUrls?: unknown; rawResponsePayload?: unknown }
 
 function getStreamPartialImages(profile: ApiProfile): number {
   return profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
+}
+
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function getErrorHttpStatus(err: unknown): number | undefined {
+  return err instanceof Error && typeof (err as ImageApiError).httpStatus === 'number'
+    ? (err as ImageApiError).httpStatus
+    : undefined
+}
+
+function isAbortError(err: unknown): boolean {
+  return typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError'
+}
+
+function isQuotaOrAuthError(message: string): boolean {
+  return /quota|额度不足|余额不足|token remain quota|You exceeded your current quota|Unauthorized|incorrect API key|无效.*key|invalid api key/i.test(message)
+}
+
+function isNonRetryableImageApiError(message: string, status?: number): boolean {
+  if (status === 401 || status === 403) return true
+  if (/安全审核|image_unsafe|generated images appear to be unsafe|Invalid size|最长边|尺寸.*超出|prompt.*32000|String should have at most/i.test(message)) return true
+  return isQuotaOrAuthError(message)
+}
+
+function isRetryableImageApiError(err: unknown): boolean {
+  if (isAbortError(err)) return false
+  if (err instanceof TypeError && /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(err.message)) return true
+
+  const message = getErrorMessage(err)
+  const status = getErrorHttpStatus(err)
+  if (isNonRetryableImageApiError(message, status)) return false
+  if (status === 408 || status === 502 || status === 503 || status === 504) return true
+  if (status === 429) return !isQuotaOrAuthError(message)
+  if (status && status >= 500) return true
+
+  return /invalid character .*looking for beginning of value|bad_response_body|upstream did not return image output|上游服务没有返回图片结果|upstream error: do request failed|do request failed|bad response status code 5\d\d|temporarily unavailable|EOF|connection reset|connection refused|network|timeout|连接.*(重置|拒绝|断开)/i.test(message)
+}
+
+function createHttpError(message: string, status: number): ImageApiError {
+  const err = new Error(message) as ImageApiError
+  err.httpStatus = status
+  return err
+}
+
+function createRetryExhaustedError(err: unknown, retries: number): unknown {
+  if (retries <= 0 || !(err instanceof Error)) return err
+  const next = new Error(`${err.message}\n提示：已自动重试 ${retries} 次，仍未成功。`) as ImageApiError
+  const source = err as ImageApiError
+  next.httpStatus = source.httpStatus
+  next.rawImageUrls = source.rawImageUrls
+  next.rawResponsePayload = source.rawResponsePayload
+  return next
+}
+
+async function waitRetryDelay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withTransientImageApiRetry(
+  operation: (timeoutSeconds: number) => Promise<CallApiResult>,
+  timeoutSeconds: number,
+): Promise<CallApiResult> {
+  const deadline = Date.now() + Math.max(1, timeoutSeconds) * 1000
+  let lastError: unknown
+  let retryCount = 0
+
+  for (let attempt = 1; attempt <= MAX_TRANSIENT_IMAGE_API_ATTEMPTS; attempt++) {
+    const remainingSeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1000))
+    try {
+      return await operation(remainingSeconds)
+    } catch (err) {
+      lastError = err
+      if (attempt >= MAX_TRANSIENT_IMAGE_API_ATTEMPTS || !isRetryableImageApiError(err)) {
+        throw createRetryExhaustedError(err, retryCount)
+      }
+
+      const delay = TRANSIENT_IMAGE_API_RETRY_DELAYS_MS[Math.min(retryCount, TRANSIENT_IMAGE_API_RETRY_DELAYS_MS.length - 1)]
+      if (Date.now() + delay >= deadline) {
+        throw createRetryExhaustedError(err, retryCount)
+      }
+
+      retryCount += 1
+      await waitRetryDelay(delay)
+    }
+  }
+
+  throw createRetryExhaustedError(lastError, retryCount)
 }
 
 function appendQuery(path: string, query?: Record<string, string>): string {
@@ -533,6 +626,18 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
 }
 
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
+  return withTransientImageApiRetry(
+    (timeoutSeconds) => callImagesApiSingleAttempt(opts, profile, customProvider, timeoutSeconds),
+    profile.timeout,
+  )
+}
+
+async function callImagesApiSingleAttempt(
+  opts: CallApiOptions,
+  profile: ApiProfile,
+  customProvider: CustomProviderDefinition | null | undefined,
+  timeoutSeconds: number,
+): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
   const prompt = profile.codexCli
     ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${originalPrompt}`
@@ -545,7 +650,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
   const paths = createOpenAICompatiblePaths(customProvider)
 
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000)
 
   try {
     let response: Response
@@ -651,7 +756,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
     }
 
     if (!response.ok) {
-      throw new Error(await getApiErrorMessage(response))
+      throw createHttpError(await getApiErrorMessage(response), response.status)
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
@@ -1007,13 +1112,20 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
 }
 
 async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
+  return withTransientImageApiRetry(
+    (timeoutSeconds) => callResponsesImageApiSingleAttempt(opts, profile, timeoutSeconds),
+    profile.timeout,
+  )
+}
+
+async function callResponsesImageApiSingleAttempt(opts: CallApiOptions, profile: ApiProfile, timeoutSeconds: number): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const requestHeaders = createRequestHeaders(profile)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000)
 
   try {
     if (opts.maskDataUrl) {
@@ -1049,7 +1161,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     })
 
     if (!response.ok) {
-      throw new Error(await getApiErrorMessage(response))
+      throw createHttpError(await getApiErrorMessage(response), response.status)
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
