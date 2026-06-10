@@ -43,6 +43,7 @@ import {
 import { callImageApi } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage, type BatchImageCallResult } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
+import { runLimitedSettled } from './lib/concurrency'
 import { IMAGE_FETCH_CORS_HINT, normalizeImageApiErrorDisplayText, normalizeImageApiErrorMessage } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
@@ -58,6 +59,7 @@ const imageCache = new Map<string, string>()
 const thumbnailCache = new Map<string, { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number }>()
 const thumbnailBackfillIds = new Map<string, 'visible' | 'background'>()
 const thumbnailBackfillRunningIds = new Set<string>()
+const AGENT_IMAGE_BATCH_CONCURRENCY = 2
 const thumbnailSubscribers = new Map<string, Set<(thumbnail: { dataUrl: string; width?: number; height?: number }) => void>>()
 let thumbnailBackfillScheduled = false
 const MAX_IMAGE_CACHE_ENTRIES = 8
@@ -3356,7 +3358,7 @@ async function executeAgentRound(
       return { dataUrls, imageIds }
     }
 
-    // Helper: execute a generate_image_batch function call concurrently
+    // Helper: execute a generate_image_batch function call with controlled concurrency
     const executeBatchFunctionCall = async (functionCallItem: ResponsesOutputItem): Promise<string> => {
       const callId = functionCallItem.call_id ?? ''
       const args = functionCallItem.arguments ?? ''
@@ -3381,51 +3383,51 @@ async function executeAgentRound(
         batchExecutionItems.push({ item, batchToolCallId, references, referenceIds })
       }
 
-      // Fire all batch items concurrently after all cards are visible.
-      const batchPromises = batchExecutionItems.map(async ({ item, batchToolCallId, references, referenceIds }) => {
-
-        const batchResult = await callBatchImageSingle({
-          profile: activeProfile,
-          params,
-          batchItemId: item.id,
-          prompt: item.prompt,
-          referenceImageDataUrls: references.dataUrls,
-          referenceIds,
-          signal: controller.signal,
-          onImageToolStarted: shouldStreamAssistantMessage
-            ? async () => {
-                if (controller.signal.aborted) return
-              }
-            : undefined,
-          onPartialImage: shouldStreamAssistantMessage
-            ? async ({ image, partialImageIndex }) => {
-                if (controller.signal.aborted) return
-                const taskId = taskIdByToolCallId.get(batchToolCallId)
-                if (taskId) {
-                  useStore.getState().setTaskStreamPreview(taskId, image, partialImageIndex)
-                  if (partialImageIndex === 0 || partialImageIndex == null) {
-                    void persistTaskStreamPartialImage(taskId, image)
+      const batchResults = await runLimitedSettled(
+        batchExecutionItems,
+        AGENT_IMAGE_BATCH_CONCURRENCY,
+        async ({ item, batchToolCallId, references, referenceIds }) => {
+          const batchResult = await callBatchImageSingle({
+            profile: activeProfile,
+            params,
+            batchItemId: item.id,
+            prompt: item.prompt,
+            referenceImageDataUrls: references.dataUrls,
+            referenceIds,
+            signal: controller.signal,
+            onImageToolStarted: shouldStreamAssistantMessage
+              ? async () => {
+                  if (controller.signal.aborted) return
+                }
+              : undefined,
+            onPartialImage: shouldStreamAssistantMessage
+              ? async ({ image, partialImageIndex }) => {
+                  if (controller.signal.aborted) return
+                  const taskId = taskIdByToolCallId.get(batchToolCallId)
+                  if (taskId) {
+                    useStore.getState().setTaskStreamPreview(taskId, image, partialImageIndex)
+                    if (partialImageIndex === 0 || partialImageIndex == null) {
+                      void persistTaskStreamPartialImage(taskId, image)
+                    }
                   }
                 }
-              }
-            : undefined,
-          onImageToolCompleted: shouldStreamAssistantMessage
-            ? async (image) => {
-                if (controller.signal.aborted) return
-                await completeAgentImageTask({ ...image, toolCallId: batchToolCallId })
-              }
-            : undefined,
-        })
+              : undefined,
+            onImageToolCompleted: shouldStreamAssistantMessage
+              ? async (image) => {
+                  if (controller.signal.aborted) return
+                  await completeAgentImageTask({ ...image, toolCallId: batchToolCallId })
+                }
+              : undefined,
+          })
 
-        // If not streaming and we have an image, complete the pre-created task.
-        if (batchResult.image && !shouldStreamAssistantMessage) {
-          await completeAgentImageTask({ ...batchResult.image, toolCallId: batchToolCallId }, batchResult.rawResponsePayload)
-        }
+          // If not streaming and we have an image, complete the pre-created task.
+          if (batchResult.image && !shouldStreamAssistantMessage) {
+            await completeAgentImageTask({ ...batchResult.image, toolCallId: batchToolCallId }, batchResult.rawResponsePayload)
+          }
 
-        return batchResult
-      })
-
-      const batchResults = await Promise.allSettled(batchPromises)
+          return batchResult
+        },
+      )
 
       // Build function_call_output
       const outputImages: Array<{ id: string; status: string; error?: string }> = []

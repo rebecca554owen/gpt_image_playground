@@ -3,6 +3,30 @@ import { DEFAULT_PARAMS } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import { callImageApi } from './api'
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+async function waitForCondition(assertion: () => void) {
+  let lastError: unknown
+  for (let i = 0; i < 20; i += 1) {
+    try {
+      assertion()
+      return
+    } catch (err) {
+      lastError = err
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+  }
+  throw lastError
+}
+
 describe('callImageApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -370,6 +394,56 @@ describe('callImageApi', () => {
       actualParams: { size: '1024x1024' },
       actualParamsList: [{ size: '1024x1024' }],
     })
+  })
+
+  it('limits concurrent Responses API multi-image requests', async () => {
+    const pending: Array<ReturnType<typeof createDeferred<Response>>> = []
+    let active = 0
+    let maxActive = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      const deferred = createDeferred<Response>()
+      pending.push(deferred)
+      try {
+        return await deferred.promise
+      } finally {
+        active -= 1
+      }
+    })
+
+    const resultPromise = callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 4 },
+      inputImageDataUrls: [],
+    })
+
+    await waitForCondition(() => expect(pending).toHaveLength(2))
+    expect(maxActive).toBe(2)
+
+    pending[0].resolve(new Response(JSON.stringify({
+      output: [{ type: 'image_generation_call', result: 'aW1hZ2UtMQ==', size: '1024x1024' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await waitForCondition(() => expect(pending).toHaveLength(3))
+    expect(maxActive).toBe(2)
+
+    pending[1].resolve(new Response(JSON.stringify({
+      output: [{ type: 'image_generation_call', result: 'aW1hZ2UtMg==', size: '1024x1024' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await waitForCondition(() => expect(pending).toHaveLength(4))
+    expect(maxActive).toBe(2)
+
+    pending[2].resolve(new Response(JSON.stringify({
+      output: [{ type: 'image_generation_call', result: 'aW1hZ2UtMw==', size: '1024x1024' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    pending[3].resolve(new Response(JSON.stringify({
+      output: [{ type: 'image_generation_call', result: 'aW1hZ2UtNA==', size: '1024x1024' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    const result = await resultPromise
+    expect(result.images).toHaveLength(4)
+    expect(maxActive).toBe(2)
   })
 
   it('keeps Responses API stream output item images when completed response omits result', async () => {
