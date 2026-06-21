@@ -97,7 +97,7 @@ vi.mock('./lib/agentApi', () => ({
 }))
 import { clearAgentConversations, clearImages, getAllAgentConversations, getAllTasks, putAgentConversation, putImage, putTask as putDbTask } from './lib/db'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
-import { cleanStaleAgentInputDrafts, deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, submitAgentMessage, submitTask, useStore } from './store'
+import { cleanStaleAgentInputDrafts, deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getApiRequestNetworkErrorHint, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, isPotentiallyBillableNetworkDisconnectTask, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, retryTask, reuseConfig, submitAgentMessage, submitTask, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -109,6 +109,49 @@ describe('error toast messages', () => {
 
   it('uses a generic message for long raw errors without a title', () => {
     expect(getErrorToastMessage(`invalid request ${'x'.repeat(90)}`)).toBe('操作失败，请查看详情')
+  })
+})
+
+describe('network disconnect guidance', () => {
+  it('warns that long Failed to fetch requests may still be processing and billable', () => {
+    const hint = getApiRequestNetworkErrorHint(
+      new TypeError('Failed to fetch'),
+      Date.now() - 120_000,
+      true,
+      { provider: 'openai', apiMode: 'images', streamImages: false, streamPartialImages: 0 },
+    )
+
+    expect(hint).toContain('请求约 120 秒后连接中断')
+    expect(hint).toContain('服务端或上游可能仍在处理')
+    expect(hint).toContain('重复扣费')
+  })
+
+  it('asks for confirmation before retrying a potentially billable network disconnect', async () => {
+    const setConfirmDialog = vi.fn()
+    useStore.setState({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      tasks: [],
+      confirmDialog: null,
+      setConfirmDialog,
+    })
+    const failedTask = task({
+      status: 'error',
+      error: 'Failed to fetch\n提示：请求约 120 秒后连接中断，服务端或上游可能仍在处理，并可能已经产生扣费；请先等待 1-2 分钟或刷新历史确认没有结果，再决定是否重试，避免重复扣费。',
+      outputImages: [],
+      rawImageUrls: [],
+    })
+
+    expect(isPotentiallyBillableNetworkDisconnectTask(failedTask)).toBe(true)
+
+    await retryTask(failedTask)
+
+    expect(useStore.getState().tasks).toEqual([])
+    expect(setConfirmDialog).toHaveBeenCalledWith(expect.objectContaining({
+      title: '确认重新提交？',
+      confirmText: '仍然重试',
+      cancelText: '先不重试',
+      tone: 'warning',
+    }))
   })
 })
 

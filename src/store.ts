@@ -1696,7 +1696,18 @@ function getApiModeApiName(apiMode: ApiMode) {
   return apiMode === 'responses' ? 'Responses API' : 'Image API'
 }
 
-function getApiRequestNetworkErrorHint(
+const NETWORK_DISCONNECT_RETRY_WARNING = '这个任务是网络或网关连接中断，浏览器没有拿到最终响应，但不一定代表上游失败。\n\n服务端或上游可能仍在处理，并可能已经产生扣费。建议先等待 1-2 分钟，或刷新/查看历史记录确认没有结果后再重试。'
+
+export function isPotentiallyBillableNetworkDisconnectTask(task: Pick<TaskRecord, 'status' | 'error' | 'outputImages' | 'rawImageUrls'>): boolean {
+  if (task.status !== 'error') return false
+  if (task.outputImages.length > 0 || (task.rawImageUrls?.length ?? 0) > 0) return false
+
+  const error = task.error ?? ''
+  if (!/failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(error)) return false
+  return /请求等待|连接中断|被断开|网关|CDN|反向代理|服务端或上游可能仍在处理|重复扣费/i.test(error)
+}
+
+export function getApiRequestNetworkErrorHint(
   err: unknown,
   createdAt: number,
   usesApiProxy: boolean,
@@ -1717,14 +1728,14 @@ function getApiRequestNetworkErrorHint(
   }
 
   if (elapsedSeconds >= 55 && elapsedSeconds <= 75) {
-    return `提示：请求等待约 60 秒后被断开，这通常是 Nginx 等反向代理的默认超时，而非接口本身报错。可调大代理的超时时间（如 proxy_read_timeout），或降低图片尺寸/质量后重试。${getTimeoutStreamingHint(profile)}`
+    return `提示：请求约 60 秒后连接中断，常见原因是浏览器到站点之间的 Nginx 等反向代理超时。服务端或上游可能仍在处理，并可能已经产生扣费；请先等待 1-2 分钟或刷新历史确认没有结果，再决定是否重试。可调大代理超时时间（如 proxy_read_timeout）。${getTimeoutStreamingHint(profile)}`
   }
 
   if (elapsedSeconds >= 110 && elapsedSeconds <= 140) {
-    return `提示：请求等待约 120 秒后被断开，这通常是 Cloudflare 等 CDN/网关的超时限制，而非接口本身报错。如果使用 Cloudflare，可考虑升级套餐或使用不经过 CDN 的直连地址。${getTimeoutStreamingHint(profile)}`
+    return `提示：请求约 120 秒后连接中断，常见于 CDN/网关超时或移动网络切换；这不等于上游失败。服务端或上游可能仍在处理，并可能已经产生扣费；请先等待 1-2 分钟或刷新历史确认没有结果，再决定是否重试，避免重复扣费。${getTimeoutStreamingHint(profile)}`
   }
 
-  return `提示：请求等待较长时间后被断开，通常是反向代理或网关的超时限制，而非接口本身报错。可检查代理超时设置，或降低图片尺寸/质量后重试。${getTimeoutStreamingHint(profile)}`
+  return `提示：请求等待较长时间后连接中断，通常是浏览器、网络、CDN 或反向代理断开，不代表上游一定失败。服务端或上游可能仍在处理，并可能已经产生扣费；请先等待 1-2 分钟或刷新历史确认没有结果，再决定是否重试。${getTimeoutStreamingHint(profile)}`
 }
 
 function getRawErrorPayload(err: unknown): Pick<Partial<TaskRecord>, 'rawImageUrls' | 'rawResponsePayload'> {
@@ -4000,8 +4011,7 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
   if (task) putTask(task)
 }
 
-/** 重试失败的任务：创建新任务并执行 */
-export async function retryTask(task: TaskRecord) {
+async function startRetryTask(task: TaskRecord) {
   const { settings } = useStore.getState()
   const activeProfile = getActiveApiProfile(settings)
   const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
@@ -4031,6 +4041,25 @@ export async function retryTask(task: TaskRecord) {
   await putTask(newTask)
 
   executeTask(taskId)
+}
+
+/** 重试失败的任务：创建新任务并执行 */
+export async function retryTask(task: TaskRecord, options: { skipPotentialDuplicateConfirm?: boolean } = {}) {
+  if (!options.skipPotentialDuplicateConfirm && isPotentiallyBillableNetworkDisconnectTask(task)) {
+    useStore.getState().setConfirmDialog({
+      title: '确认重新提交？',
+      message: NETWORK_DISCONNECT_RETRY_WARNING,
+      confirmText: '仍然重试',
+      cancelText: '先不重试',
+      tone: 'warning',
+      action: () => {
+        void startRetryTask(task)
+      },
+    })
+    return
+  }
+
+  await startRetryTask(task)
 }
 
 /** 复用配置 */
