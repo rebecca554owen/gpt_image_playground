@@ -286,12 +286,197 @@ function getResponsesImageResultBase64(result: ResponsesOutputItem['result']): s
   return b64.trim() ? b64 : undefined
 }
 
+const FALLBACK_IMAGE_URL_PATHS = [
+  'url',
+  'image_url',
+  'imageUrl',
+  'image.url',
+  'image.image_url',
+  'image.imageUrl',
+  'data.*.url',
+  'data.*.image_url',
+  'data.*.imageUrl',
+  'data.data.*.url',
+  'data.data.*.image_url',
+  'data.data.*.imageUrl',
+  'data.data.data.*.url',
+  'data.data.data.*.image_url',
+  'data.data.data.*.imageUrl',
+  'result.url',
+  'result.image_url',
+  'result.imageUrl',
+  'result.image.url',
+  'result.image.image_url',
+  'result.image.imageUrl',
+  'result.images.*',
+  'result.images.*.url',
+  'result.images.*.image_url',
+  'result.images.*.imageUrl',
+  'images.*',
+  'images.*.url',
+  'images.*.image_url',
+  'images.*.imageUrl',
+  'output.*.url',
+  'output.*.image_url',
+  'output.*.imageUrl',
+  'output.*.result.url',
+  'output.*.result.image_url',
+  'output.*.result.imageUrl',
+]
+
+const FALLBACK_B64_IMAGE_PATHS = [
+  'b64_json',
+  'base64',
+  'image_base64',
+  'imageBase64',
+  'image.b64_json',
+  'image.base64',
+  'image.image_base64',
+  'image.imageBase64',
+  'data.*.b64_json',
+  'data.*.base64',
+  'data.*.image_base64',
+  'data.*.imageBase64',
+  'data.data.*.b64_json',
+  'data.data.*.base64',
+  'data.data.*.image_base64',
+  'data.data.*.imageBase64',
+  'data.data.data.*.b64_json',
+  'data.data.data.*.base64',
+  'data.data.data.*.image_base64',
+  'data.data.data.*.imageBase64',
+  'result.b64_json',
+  'result.base64',
+  'result.image_base64',
+  'result.imageBase64',
+  'result.image',
+  'result.image.b64_json',
+  'result.image.base64',
+  'result.images.*',
+  'result.images.*.b64_json',
+  'result.images.*.base64',
+  'result.images.*.image_base64',
+  'result.images.*.imageBase64',
+  'images.*',
+  'images.*.b64_json',
+  'images.*.base64',
+  'images.*.image_base64',
+  'images.*.imageBase64',
+  'output.*.result',
+  'output.*.b64_json',
+  'output.*.base64',
+  'output.*.image_base64',
+  'output.*.imageBase64',
+]
+
+const UPSTREAM_EMPTY_IMAGE_RESPONSE_MESSAGE = '上游返回了成功状态，但响应里没有图片数据。请点「API 实际响应值」复制原始响应给客服或上游排查；常见原因是渠道空结果、异步任务未完成，或中转返回了非 OpenAI 标准结构。'
+const UPSTREAM_UNRECOGNIZED_IMAGE_RESPONSE_MESSAGE = '上游返回了成功状态，但图片字段不是本站可识别的格式。请点「API 实际响应值」复制原始响应给客服或上游排查。'
+
+function getRawResponsePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, null, 2)
+  } catch {
+    return String(payload)
+  }
+}
+
+function createRawPayloadError(message: string, payload: unknown): Error {
+  const err = new Error(message)
+  ;(err as any).rawResponsePayload = getRawResponsePayload(payload)
+  return err
+}
+
+function isLikelyBase64Image(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (trimmed.startsWith('data:')) return true
+  if (/^https?:\/\//i.test(trimmed)) return false
+  if (trimmed.length < 80) return false
+  return /^[A-Za-z0-9+/_=-]+$/.test(trimmed.replace(/\s/g, ''))
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+}
+
+function getUsefulUpstreamMessage(payload: unknown): string | undefined {
+  const candidates = [
+    getByPath(payload, 'error.message'),
+    getByPath(payload, 'error'),
+    getByPath(payload, 'message'),
+    getByPath(payload, 'msg'),
+    getByPath(payload, 'detail'),
+    getByPath(payload, 'fail_reason'),
+    getByPath(payload, 'reason'),
+    getByPath(payload, 'data.error.message'),
+    getByPath(payload, 'data.error'),
+    getByPath(payload, 'data.message'),
+    getByPath(payload, 'data.msg'),
+    getByPath(payload, 'data.fail_reason'),
+    getByPath(payload, 'data.reason'),
+  ]
+
+  for (const candidate of candidates) {
+    const message = typeof candidate === 'string'
+      ? candidate.trim()
+      : Array.isArray(candidate)
+      ? candidate.map((item) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n').trim()
+      : ''
+    if (!message || /^(ok|success|succeeded|done|completed|true)$/i.test(message)) continue
+    return normalizeImageApiErrorMessage(message)
+  }
+  return undefined
+}
+
+async function extractFallbackImages(payload: unknown, mime: string, signal?: AbortSignal): Promise<CallApiResult | null> {
+  const b64Images = uniqueStrings(
+    FALLBACK_B64_IMAGE_PATHS.flatMap((path) =>
+      getAllByPath(payload, path).filter(isLikelyBase64Image),
+    ),
+  )
+  const imageUrls = uniqueStrings(
+    FALLBACK_IMAGE_URL_PATHS.flatMap((path) =>
+      getAllByPath(payload, path).filter((value): value is string => isHttpUrl(value) || isDataUrl(value)),
+    ),
+  )
+  if (!b64Images.length && !imageUrls.length) return null
+
+  const rawImageUrls = imageUrls.filter(isHttpUrl)
+  const images: string[] = []
+  try {
+    for (const b64 of b64Images) images.push(normalizeBase64Image(b64, mime))
+    for (const url of imageUrls) images.push(await fetchImageUrlAsDataUrl(url, mime, signal))
+  } catch (err) {
+    if (rawImageUrls.length > 0 && err instanceof Error) {
+      (err as any).rawImageUrls = rawImageUrls
+    }
+    throw err
+  }
+
+  const actualParams = mergeActualParams(pickActualParams(payload))
+  return {
+    images,
+    actualParams,
+    actualParamsList: images.map(() => actualParams),
+    ...(rawImageUrls.length ? { rawImageUrls } : {}),
+  }
+}
+
+function createNoImageDataError(payload: unknown, fallbackMessage: string): Error {
+  const upstreamMessage = getUsefulUpstreamMessage(payload)
+  return createRawPayloadError(
+    upstreamMessage ? `上游返回了成功状态，但没有返回图片数据：${upstreamMessage}` : fallbackMessage,
+    payload,
+  )
+}
+
 async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
   const data = payload.data
   if (!Array.isArray(data) || !data.length) {
-    const err = new Error('接口没有返回图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
-    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
-    throw err
+    const fallbackResult = await extractFallbackImages(payload, mime, signal)
+    if (fallbackResult) return fallbackResult
+    throw createNoImageDataError(payload, UPSTREAM_EMPTY_IMAGE_RESPONSE_MESSAGE)
   }
 
   const images: string[] = []
@@ -319,9 +504,9 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
   }
 
   if (!images.length) {
-    const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
-    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
-    throw err
+    const fallbackResult = await extractFallbackImages(payload, mime, signal)
+    if (fallbackResult) return fallbackResult
+    throw createNoImageDataError(payload, UPSTREAM_UNRECOGNIZED_IMAGE_RESPONSE_MESSAGE)
   }
 
   const actualParams = mergeActualParams(
