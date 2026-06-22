@@ -128,6 +128,40 @@ describe('callImageApi', () => {
     expect(result.actualParams).toEqual({ size: '1024x1024' })
   })
 
+  it('extracts image data from completed image edit events returned as JSON', async () => {
+    const b64 = `iVBORw0KGgo=${'A'.repeat(100)}`
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'image_edit.completed',
+      b64_json: b64,
+      output_format: 'png',
+      quality: 'auto',
+      size: 'auto',
+      model: 'gpt-image-2-codex',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        codexCli: false,
+        streamImages: false,
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toEqual([`data:image/png;base64,${b64}`])
+    expect(result.actualParams).toEqual({
+      output_format: 'png',
+      quality: 'auto',
+      size: 'auto',
+    })
+  })
+
   it('surfaces upstream messages from successful Images API responses without image data', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       data: [],

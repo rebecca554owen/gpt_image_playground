@@ -1,5 +1,12 @@
-const CACHE_NAME = 'gpt-image-playground-v0.1.5'
+const CACHE_NAME = 'gpt-image-playground-v0.4.20'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
+const NETWORK_FIRST_DESTINATIONS = new Set(['script', 'style', 'worker'])
+
+function putCache(request, response) {
+  if (!response.ok) return
+  const copy = response.clone()
+  caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -29,11 +36,22 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', copy))
+          putCache('./index.html', response)
           return response
         })
         .catch(() => caches.match('./index.html')),
+    )
+    return
+  }
+
+  if (NETWORK_FIRST_DESTINATIONS.has(request.destination)) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          putCache(request, response)
+          return response
+        })
+        .catch(() => caches.match(request)),
     )
     return
   }
@@ -43,10 +61,7 @@ self.addEventListener('fetch', (event) => {
       if (cached) return cached
 
       return fetch(request).then((response) => {
-        if (response.ok) {
-          const copy = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
-        }
+        putCache(request, response)
         return response
       })
     }),
