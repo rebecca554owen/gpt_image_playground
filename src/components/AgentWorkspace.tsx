@@ -1,58 +1,16 @@
-import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { AgentConversation, AgentMessage, AgentRound, ResponsesOutputItem, TaskRecord } from '../types'
-import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, updateTaskInStore, useStore } from '../store'
+import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
-import { downloadImageIds } from '../lib/downloadImages'
+import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
 import { normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
 import TaskCard from './TaskCard'
-import ViewportTooltip from './ViewportTooltip'
 import MarkdownRenderer from './MarkdownRenderer'
+import { TooltipButton as AgentActionButton } from './TooltipButton'
 import { TrashIcon, DownloadIcon, EditIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, SidebarLeftIcon, FavoriteIcon, CloseIcon, CopyIcon, RefreshIcon, ArrowDownIcon } from './icons'
-
-function AgentActionButton({
-  tooltip,
-  className,
-  disabled = false,
-  onClick,
-  onMouseDown,
-  children,
-}: {
-  tooltip: string
-  className: string
-  disabled?: boolean
-  onClick?: (e: ReactMouseEvent<HTMLButtonElement>) => void
-  onMouseDown?: (e: ReactMouseEvent<HTMLButtonElement>) => void
-  children: ReactNode
-}) {
-  const [tooltipVisible, setTooltipVisible] = useState(false)
-
-  return (
-    <span
-      className="relative inline-flex"
-      onMouseEnter={() => setTooltipVisible(true)}
-      onMouseLeave={() => setTooltipVisible(false)}
-      onFocus={() => setTooltipVisible(true)}
-      onBlur={() => setTooltipVisible(false)}
-    >
-      <button
-        type="button"
-        className={className}
-        disabled={disabled}
-        aria-label={tooltip}
-        onClick={onClick}
-        onMouseDown={onMouseDown}
-      >
-        {children}
-      </button>
-      <ViewportTooltip visible={tooltipVisible} className="whitespace-nowrap">
-        {tooltip}
-      </ViewportTooltip>
-    </span>
-  )
-}
 
 function ChatImageThumb({ imageId, imageIndex, maskImageId }: { imageId: string; imageIndex: number; maskImageId?: string | null }) {
   const [src, setSrc] = useState<string>(() => getCachedImage(imageId) || '')
@@ -165,8 +123,13 @@ function markToolStatusStopped(status: AgentWebSearchStatus): AgentWebSearchStat
 }
 
 function getImageTaskForOutputItem(item: ResponsesOutputItem, tasksForRound: TaskRecord[]) {
-  if (item.type !== 'image_generation_call') return null
-  return tasksForRound.find((task) => task.agentToolCallId && task.agentToolCallId === item.id) ?? null
+  if (item.type === 'image_generation_call') {
+    return tasksForRound.find((task) => task.agentToolCallId && task.agentToolCallId === item.id) ?? null
+  }
+  if (item.type === 'function_call' && item.name === 'generate_image' && item.call_id) {
+    return tasksForRound.find((task) => task.agentToolCallId === item.call_id) ?? null
+  }
+  return null
 }
 
 function getBatchImageTasksForOutputItem(item: ResponsesOutputItem, tasksForRound: TaskRecord[]) {
@@ -336,9 +299,9 @@ export default function AgentWorkspace() {
   const setAgentEditingRoundId = useStore((s) => s.setAgentEditingRoundId)
   const setActiveAgentRoundId = useStore((s) => s.setActiveAgentRoundId)
   const showToast = useStore((s) => s.showToast)
+  const openFavoritePicker = useStore((s) => s.openFavoritePicker)
   const agentGeneratingTitleIds = useStore((s) => s.agentGeneratingTitleIds)
   const conversation = conversations.find((item) => item.id === activeConversationId) ?? null
-  const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null)
   const [editingConversationTitle, setEditingConversationTitle] = useState('')
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -693,11 +656,21 @@ export default function AgentWorkspace() {
 
   const handleDeleteMessage = (message: AgentMessage, round: AgentRound) => {
     const isUserMessage = message.role === 'user'
+    const existingTaskIds = new Set(tasks.map((task) => task.id))
+    const assistantTaskIds = isUserMessage
+      ? []
+      : Array.from(new Set([
+          ...(message.outputTaskIds ?? []),
+          ...round.outputTaskIds,
+          ...tasks
+            .filter((task) => task.agentMessageId === message.id || task.agentRoundId === round.id)
+            .map((task) => task.id),
+        ])).filter((taskId) => existingTaskIds.has(taskId))
     setConfirmDialog({
       title: isUserMessage ? '删除轮次' : '删除消息',
       message: isUserMessage
-        ? '确定要删除这轮记录吗？这会删除这条消息和它的输出，后续消息会被保留。'
-        : '确定要删除这条消息吗？关联的图片任务不会从画廊中删除。',
+        ? '确定要删除这轮任务吗？这会删除这条消息和它的输出，后续消息会被保留。'
+        : '确定要删除这条消息吗？这会同时删除这条回复生成的图片。',
       action: async () => {
         if (isUserMessage) {
           if (round.outputTaskIds.length > 0) await removeMultipleTasks(round.outputTaskIds)
@@ -730,6 +703,8 @@ export default function AgentWorkspace() {
           })
           return
         }
+
+        if (assistantTaskIds.length > 0) await removeMultipleTasks(assistantTaskIds)
 
         useStore.setState((state) => ({
           agentConversations: state.agentConversations.map((item) =>
@@ -873,7 +848,7 @@ export default function AgentWorkspace() {
               <div
                 key={item.id}
                 data-agent-conversation-item
-                className="group flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-gray-100 dark:hover:bg-white/[0.04]"
+                className="group flex h-14 items-center gap-2 rounded-lg px-2 hover:bg-gray-100 dark:hover:bg-white/[0.04]"
                 onPointerDown={(e) => handleConversationPointerDown(item.id, e)}
                 onPointerUp={clearConversationLongPressTimer}
                 onPointerCancel={clearConversationLongPressTimer}
@@ -886,7 +861,7 @@ export default function AgentWorkspace() {
                   <div className="min-w-0 flex-1 flex flex-col justify-center h-[38px]">
                     <input
                       type="text"
-                      className="flex-1 bg-white dark:bg-black/20 border border-blue-400/50 dark:border-white/20 rounded px-1.5 py-0.5 text-sm outline-none text-gray-900 dark:text-white focus:border-blue-500 dark:focus:border-white/40 shadow-sm min-w-0"
+                      className="h-7 flex-1 bg-white dark:bg-black/20 border border-blue-400/50 dark:border-white/20 rounded px-1.5 py-0 text-sm leading-7 outline-none text-gray-900 dark:text-white focus:border-blue-500 dark:focus:border-white/40 shadow-sm min-w-0"
                       value={editingConversationTitle}
                       onChange={(e) => setEditingConversationTitle(e.target.value)}
                       onKeyDown={handleRenameKeyDown}
@@ -905,6 +880,7 @@ export default function AgentWorkspace() {
                   {agentEditingConversationId === item.id ? (
                     <AgentActionButton
                       tooltip="确认"
+                      onClick={(e) => e.stopPropagation()}
                       onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); confirmRenameConversation() }}
                       className="p-1.5 hover:bg-gray-200 dark:hover:bg-white/10 rounded-md text-green-500 hover:text-green-600 transition-colors"
                     >
@@ -1017,9 +993,9 @@ export default function AgentWorkspace() {
                       }`}
                       >
                     <div className="mb-2 flex items-center justify-between gap-4 text-sm text-gray-500 dark:text-gray-400">
-                      <button type="button" onClick={(e) => { e.stopPropagation(); setSelectedRoundId(message.roundId); }} className="hover:text-gray-800 dark:hover:text-gray-200 transition-colors font-medium">
+                      <span className="font-medium">
                          <span className={isAssistant ? 'text-blue-600 dark:text-blue-400 font-semibold' : 'text-gray-700 dark:text-gray-200 font-semibold'}>{isAssistant ? 'Agent' : '用户'}</span> <span className="opacity-60 font-normal ml-1">· 第 {round?.index ?? '?'} 轮</span>
-                      </button>
+                      </span>
                     </div>
                     
                     {message.role === 'user' && round && round.inputImageIds.length > 0 && (
@@ -1095,7 +1071,7 @@ export default function AgentWorkspace() {
                                     onClick={() => setDetailTaskId(block.task.id)}
                                     onReuse={() => handleReuse(block.task)}
                                     onEditOutputs={() => editOutputs(block.task)}
-                                    onDelete={() => setConfirmDialog({ title: '删除记录', message: '确定要删除这条记录吗？', action: () => removeTask(block.task) })}
+                                    onDelete={() => setConfirmDialog({ title: '删除任务', message: '确定要删除这个任务吗？', action: () => removeTask(block.task) })}
                                   />
                                 </div>
                               )
@@ -1160,20 +1136,22 @@ export default function AgentWorkspace() {
                             }}>
                               <RefreshIcon className="w-4 h-4" />
                             </AgentActionButton>
-                            <AgentActionButton tooltip={allRoundTasksFavorited ? '取消收藏所有图片' : '收藏所有图片'} className={`p-1.5 rounded-md transition-colors ${hasRoundFavoriteTasks ? (allRoundTasksFavorited ? 'text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10' : 'text-gray-400 hover:text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10') : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={!hasRoundFavoriteTasks} onClick={() => {
+                            <AgentActionButton tooltip={allRoundTasksFavorited ? '编辑收藏夹' : '收藏所有图片'} className={`p-1.5 rounded-md transition-colors ${hasRoundFavoriteTasks ? (allRoundTasksFavorited ? 'text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10' : 'text-gray-400 hover:text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10') : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={!hasRoundFavoriteTasks} onClick={() => {
                               if (!hasRoundFavoriteTasks) return;
-                              const nextFavorite = !allRoundTasksFavorited;
-                              favoriteTasksForRound.forEach(t => updateTaskInStore(t.id, { isFavorite: nextFavorite }));
-                              useStore.getState().showToast(nextFavorite ? `已收藏 ${favoriteTasksForRound.length} 个任务的图片` : `已取消收藏 ${favoriteTasksForRound.length} 个任务的图片`, 'success');
+                              openFavoritePicker(favoriteTasksForRound.map((task) => task.id));
                             }}>
                               <FavoriteIcon className="w-4 h-4" filled={allRoundTasksFavorited} />
                             </AgentActionButton>
-                                                        <AgentActionButton tooltip="下载所有图片" className={`p-1.5 rounded-md transition-colors ${getRoundTasks(round ?? null, tasks).filter(Boolean).length > 0 ? 'text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-500/10' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={getRoundTasks(round ?? null, tasks).filter(Boolean).length === 0} onClick={async () => {
+                            <AgentActionButton tooltip="下载所有图片" className={`p-1.5 rounded-md transition-colors ${getRoundTasks(round ?? null, tasks).filter(Boolean).length > 0 ? 'text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-500/10' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={getRoundTasks(round ?? null, tasks).filter(Boolean).length === 0} onClick={async () => {
                                const imageIds = tasksForRound.flatMap(t => t.outputImages || []);
                                if (imageIds.length === 0) return;
                                try {
-                                 const roundIndex = round?.index ?? 0;
-                                 const { successCount, failCount } = await downloadImageIds(imageIds, 'agent-round-' + roundIndex);
+                                  const roundIndex = round?.index ?? 0;
+                                  const fileNameBase = 'agent-round-' + roundIndex;
+                                  const settings = useStore.getState().settings;
+                                  const { successCount, failCount } = settings.zipDownloadRoutes.includes('agent-round-all')
+                                    ? await downloadImageEntriesAsZip(getImageZipEntries(imageIds, fileNameBase), fileNameBase)
+                                    : await downloadImageIds(imageIds, fileNameBase);
                                  if (successCount === 0) {
                                    useStore.getState().showToast('下载失败', 'error');
                                  } else if (failCount > 0) {

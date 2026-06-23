@@ -1,4 +1,5 @@
 import type { AppSettings, TaskParams } from '../types'
+import { blobToDataUrl } from './dataUrl'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -7,8 +8,7 @@ export const MIME_MAP: Record<string, string> = {
 }
 
 export const MAX_MASK_EDIT_FILE_BYTES = 50 * 1024 * 1024
-export const MAX_IMAGE_EDIT_FILE_BYTES = 50 * 1024 * 1024
-export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 256 * 1024 * 1024
+export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 512 * 1024 * 1024
 
 export interface CallApiOptions {
   settings: AppSettings
@@ -33,6 +33,8 @@ export interface CallApiResult {
   revisedPrompts?: Array<string | undefined>
   /** API 返回的原始图片 HTTP URL（非 base64 时记录） */
   rawImageUrls?: string[]
+  /** 并发多图请求中失败的单张请求 */
+  failedRequests?: Array<{ requestIndex: number; error: string }>
 }
 
 export function isHttpUrl(value: unknown): value is string {
@@ -49,12 +51,6 @@ export function normalizeBase64Image(value: string, fallbackMime: string): strin
 
 function formatMiB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
-}
-
-function formatOfficialLimitText(maxBytes: number) {
-  return maxBytes >= 1024 * 1024
-    ? `${Math.round(maxBytes / 1024 / 1024)} MB`
-    : formatMiB(maxBytes)
 }
 
 export function getDataUrlEncodedByteSize(dataUrl: string): number {
@@ -76,35 +72,39 @@ export function getDataUrlDecodedByteSize(dataUrl: string): number {
 
 function assertMaxBytes(label: string, bytes: number, maxBytes: number) {
   if (bytes > maxBytes) {
-    throw new Error(`${label}过大：当前约 ${formatMiB(bytes)}，上限为 ${formatOfficialLimitText(maxBytes)}`)
+    throw new Error(`${label}过大：${formatMiB(bytes)}，上限为 ${formatMiB(maxBytes)}`)
   }
 }
 
 export function assertImageInputPayloadSize(bytes: number) {
-  assertMaxBytes('图像输入总大小', bytes, MAX_IMAGE_INPUT_PAYLOAD_BYTES)
+  assertMaxBytes('图像输入有效负载总大小', bytes, MAX_IMAGE_INPUT_PAYLOAD_BYTES)
 }
 
 export function assertMaskEditFileSize(label: string, bytes: number) {
   assertMaxBytes(label, bytes, MAX_MASK_EDIT_FILE_BYTES)
 }
 
-export function assertImageEditFileSize(label: string, bytes: number) {
-  assertMaxBytes(label, bytes, MAX_IMAGE_EDIT_FILE_BYTES)
-}
-
-async function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> {
-  const bytes = new Uint8Array(await blob.arrayBuffer())
-  let binary = ''
-
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    const chunk = bytes.subarray(i, i + 0x8000)
-    binary += String.fromCharCode(...chunk)
-  }
-
-  return `data:${blob.type || fallbackMime};base64,${btoa(binary)}`
-}
-
 export const IMAGE_FETCH_CORS_HINT = ' 可点链接按钮复制结果链接，或尝试开启「返回 Base64 图片数据」避免此问题。'
+export const STREAMING_UNSUPPORTED_HINT = '提示：当前使用的 API 可能不支持流式传输，请尝试关闭「流式传输」功能。'
+export const STREAMING_FORMAT_HINT = '提示：API 返回了无法解析的流式数据格式，请尝试关闭「流式传输」功能。'
+
+export function appendStreamingUnsupportedHint(message: string): string {
+  return message ? `${message}\n${STREAMING_UNSUPPORTED_HINT}` : STREAMING_UNSUPPORTED_HINT
+}
+
+export function appendStreamingFormatHint(message: string): string {
+  return message ? `${message}\n${STREAMING_FORMAT_HINT}` : STREAMING_FORMAT_HINT
+}
+
+/** 排除明确与流式无关的状态码后追加提示 */
+export function maybeAppendStreamingHint(message: string, status: number, streamImages?: boolean): string {
+  if (!streamImages) return message
+  if (status === 401 || status === 403 || status === 404 || status === 408 || status === 429 || status >= 500) {
+    return message
+  }
+  return appendStreamingUnsupportedHint(message)
+}
+
 export const IMAGE_UNSAFE_ERROR_MESSAGE = '生成结果触发安全审核，请调整提示词或参考图后重试。'
 export const UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE = '上游服务没有返回图片结果，请稍后重试或调整提示词。'
 export const INVALID_IMAGE_SIZE_ERROR_MESSAGE = '图片尺寸超出服务商限制，请改小尺寸后重试。'
@@ -147,7 +147,7 @@ export function normalizeImageApiErrorMessage(message: string): string {
 export function normalizeImageApiErrorDisplayText(message: string): string {
   const requestFailurePrefix = '请求失败：'
   const prefix = message.startsWith(requestFailurePrefix) ? requestFailurePrefix : ''
-  const body = prefix ? message.slice(prefix.length) : message
+  const body = prefix ? message.slice(requestFailurePrefix.length) : message
   const [mainMessage, ...hints] = body.split('\n提示：')
   const normalizedMainMessage = normalizeImageApiErrorMessage(mainMessage)
 
@@ -206,6 +206,7 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
 
 export async function getApiErrorMessage(response: Response): Promise<string> {
   let errorMsg = `HTTP ${response.status}`
+  const textResponse = response.clone()
   try {
     const errJson = await response.json()
     if (errJson.error?.message) errorMsg = errJson.error.message
@@ -218,7 +219,7 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
     }
   } catch {
     try {
-      errorMsg = await response.text()
+      errorMsg = await textResponse.text()
     } catch {
       /* ignore */
     }
