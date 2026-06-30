@@ -620,6 +620,7 @@ async function parseResponsesApiStreamResponse(
 ): Promise<CallApiResult> {
   let completedPayload: ResponsesApiResponse | null = null
   const outputItems: ResponsesOutputItem[] = []
+  const completedImageApiItems: ImageResponseItem[] = []
 
   await readJsonServerSentEvents(response, (event) => {
     const type = getStringValue(event, 'type')
@@ -631,6 +632,11 @@ async function parseResponsesApiStreamResponse(
           partialImageIndex: getNumberValue(event, 'partial_image_index'),
         })
       }
+      return
+    }
+
+    if (type === 'image_generation.completed' || type === 'image_edit.completed') {
+      completedImageApiItems.push(eventToImageResponseItem(event))
       return
     }
 
@@ -646,12 +652,24 @@ async function parseResponsesApiStreamResponse(
   })
 
   const payload = completedPayload ?? (outputItems.length ? { output: outputItems } : null)
-  if (!payload) throw new Error('流式接口未返回最终图片数据')
+  const parseImageApiFallback = () => completedImageApiItems.length
+    ? parseImagesApiResponse({
+      ...completedImageApiItems[0],
+      ...(completedImageApiItems.length > 1 ? { data: completedImageApiItems } : {}),
+    } as ImageApiResponse, mime).catch(() => null)
+    : Promise.resolve(null)
+  if (!payload) {
+    const fallbackResult = await parseImageApiFallback()
+    if (fallbackResult) return fallbackResult
+    throw new Error('流式接口未返回最终图片数据')
+  }
 
   let imageResults: ReturnType<typeof parseResponsesImageResults>
   try {
     imageResults = parseResponsesImageResults(payload, mime)
   } catch (err) {
+    const fallbackResult = await parseImageApiFallback()
+    if (fallbackResult) return fallbackResult
     const collectedImageItems = outputItems.filter((item) => getResponsesImageResultBase64(item.result))
     if (collectedImageItems.length === 0) throw err
     imageResults = parseResponsesImageResults({ output: collectedImageItems }, mime)

@@ -769,6 +769,51 @@ describe('callImageApi', () => {
     })
   })
 
+  it('falls back to Images API stream events for compatible Responses API gateways', async () => {
+    const b64 = `iVBORw0KGgo=${'A'.repeat(100)}`
+    const streamBody = [
+      `data: ${JSON.stringify({
+        type: 'image_edit.completed',
+        b64_json: b64,
+        output_format: 'png',
+        quality: 'auto',
+        size: 'auto',
+      })}`,
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(streamBody, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        apiMode: 'responses',
+        streamImages: true,
+        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
+          ...profile,
+          apiKey: 'test-key',
+          apiMode: 'responses',
+          streamImages: true,
+        })),
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    } as any)
+
+    expect(result.images).toEqual([`data:image/png;base64,${b64}`])
+    expect(result.actualParams).toEqual({
+      output_format: 'png',
+      quality: 'auto',
+      size: 'auto',
+    })
+  })
+
   it('uses the same-origin API proxy path when API proxy is enabled', async () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
