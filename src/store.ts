@@ -723,7 +723,7 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
     typeof persisted.activeAgentConversationId === 'string' && (!hasPersistedAgentConversations || agentConversations.some((conversation) => conversation.id === persisted.activeAgentConversationId))
       ? persisted.activeAgentConversationId
       : agentConversations[0]?.id ?? null
-  const appMode = persisted.appMode === 'agent' ? 'agent' : 'gallery'
+  const appMode = persisted.appMode === 'agent' || persisted.appMode === 'video' ? persisted.appMode : 'gallery'
   const galleryInputDraft = settings.persistInputOnRestart
     ? normalizeAgentInputDraft(persisted.galleryInputDraft ?? {
         prompt: persisted.prompt,
@@ -1151,6 +1151,20 @@ export const useStore = create<AppState>()(
       // Mode
       appMode: 'gallery',
       setAppMode: (appMode) => {
+        if (appMode === 'video') {
+          const state = get()
+          set({
+            appMode,
+            agentInputDrafts: saveActiveAgentInputDrafts(state),
+            galleryInputDraft: saveGalleryInputDraft(state),
+            agentMobileHeaderVisible: true,
+            selectedTaskIds: [],
+            selectedFavoriteCollectionIds: [],
+            agentEditingRoundId: null,
+          })
+          return
+        }
+
         if (appMode === 'gallery') {
           const state = get()
           const agentInputDrafts = saveActiveAgentInputDrafts(state)
@@ -1163,7 +1177,7 @@ export const useStore = create<AppState>()(
             selectedTaskIds: [],
             selectedFavoriteCollectionIds: [],
             agentEditingRoundId: null,
-            ...(state.appMode === 'agent' ? restoreGalleryInputDraftState(galleryInputDraft) : {}),
+            ...(state.appMode !== 'gallery' ? restoreGalleryInputDraftState(galleryInputDraft) : {}),
           }))
           return
         }
