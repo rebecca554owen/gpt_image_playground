@@ -1280,7 +1280,14 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     }
 
     const payload = await response.json() as ResponsesApiResponse
-    const imageResults = parseResponsesImageResults(payload, mime)
+    let imageResults: Array<{ image: string; actualParams?: Partial<TaskParams>; revisedPrompt?: string }>
+    try {
+      imageResults = parseResponsesImageResults(payload, mime)
+    } catch (err) {
+      const fallbackResult = await parseImagesApiResponse(payload as ImageApiResponse, mime, controller.signal).catch(() => null)
+      if (fallbackResult) return fallbackResult
+      throw err
+    }
     const actualParams = mergeActualParams(
       imageResults[0]?.actualParams ?? {},
     )

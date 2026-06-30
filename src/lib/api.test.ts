@@ -651,6 +651,35 @@ describe('callImageApi', () => {
     })
   })
 
+  it('falls back to Images API payload parsing for compatible Responses API gateways', async () => {
+    const b64 = `iVBORw0KGgo=${'A'.repeat(100)}`
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'image_edit.completed',
+      b64_json: b64,
+      output_format: 'png',
+      quality: 'auto',
+      size: 'auto',
+      model: 'gpt-image-2-codex',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toEqual([`data:image/png;base64,${b64}`])
+    expect(result.actualParams).toEqual({
+      output_format: 'png',
+      quality: 'auto',
+      size: 'auto',
+    })
+  })
+
   it('limits concurrent Responses API multi-image requests', async () => {
     const pending: Array<ReturnType<typeof createDeferred<Response>>> = []
     let active = 0
