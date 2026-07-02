@@ -131,7 +131,7 @@ import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversati
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getApiRequestNetworkErrorHint, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, isPotentiallyBillableNetworkDisconnectTask, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, retryTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getApiRequestNetworkErrorHint, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, isPotentiallyBillableNetworkDisconnectTask, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, retryTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -757,6 +757,34 @@ describe('agent conversation persistence', () => {
     const serializedMigrated = JSON.stringify(migrated)
     expect(serializedMigrated).not.toContain('legacy-base64')
     expect(serializedMigrated).toContain('image_generation_call')
+  })
+
+  it('collects agent task ids from round metadata and task backrefs', () => {
+    const conversation = agentConversation({
+      id: 'conversation-a',
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'user-a',
+        prompt: '画一张图',
+        inputImageIds: [],
+        outputTaskIds: ['task-success'],
+        status: 'error',
+        error: null,
+        createdAt: 1,
+        finishedAt: null,
+      }],
+      messages: [],
+    })
+    const tasks = [
+      task({ id: 'task-success', agentConversationId: 'conversation-a', agentRoundId: 'round-a', status: 'done', outputImages: ['image-a'] }),
+      task({ id: 'task-recoverable', agentConversationId: 'conversation-a', agentRoundId: 'round-a', status: 'error', error: '连接已断开', customRecoverable: true }),
+      task({ id: 'task-unrelated', agentConversationId: 'other', agentRoundId: 'other-round', status: 'error', error: '失败' }),
+    ]
+
+    expect(getAgentRoundTaskIds(conversation.rounds[0], tasks)).toEqual(['task-success', 'task-recoverable'])
+    expect(getAgentConversationTaskIds(conversation, tasks)).toEqual(['task-success', 'task-recoverable'])
   })
 })
 
