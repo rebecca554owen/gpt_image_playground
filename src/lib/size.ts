@@ -5,6 +5,8 @@ const MAX_EDGE = 3840
 const MAX_ASPECT_RATIO = 3
 const MIN_PIXELS = 655_360
 const MAX_PIXELS = 8_294_400
+const STANDARD_MAX_EDGE = 2560
+const STANDARD_MAX_PIXELS = 4_194_304
 
 export type SizeTier = '1K' | '2K' | '4K'
 type PresetRatio = '1:1' | '3:2' | '2:3' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9'
@@ -65,6 +67,16 @@ export function normalizeImageSize(size: string) {
 
   const { width, height } = normalizeDimensions(Number(match[1]), Number(match[2]))
   return `${width}x${height}`
+}
+
+export function isFourKImageSize(size: string) {
+  const normalized = normalizeImageSize(size)
+  const match = normalized.match(SIZE_PATTERN)
+  if (!match) return false
+
+  const width = Number(match[1])
+  const height = Number(match[2])
+  return Math.max(width, height) > STANDARD_MAX_EDGE || width * height > STANDARD_MAX_PIXELS
 }
 
 export function parseRatio(ratio: string) {

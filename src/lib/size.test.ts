@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculateImageSize } from './size'
+import { calculateImageSize, isFourKImageSize } from './size'
 
 describe('calculateImageSize', () => {
   it('uses common 16:9 display resolutions for the built-in tiers', () => {
@@ -16,5 +16,24 @@ describe('calculateImageSize', () => {
 
   it('falls back to budget-based sizing for custom ratios', () => {
     expect(calculateImageSize('2K', '5:4')).toBe('2288x1824')
+  })
+})
+
+describe('isFourKImageSize', () => {
+  it('keeps 1K and 2K sizes on the standard model', () => {
+    expect(isFourKImageSize('1024x1024')).toBe(false)
+    expect(isFourKImageSize('2048x2048')).toBe(false)
+    expect(isFourKImageSize('2560x1440')).toBe(false)
+  })
+
+  it('routes 4K and oversized custom dimensions to the 4K model', () => {
+    expect(isFourKImageSize('3840x2160')).toBe(true)
+    expect(isFourKImageSize('2880x2880')).toBe(true)
+    expect(isFourKImageSize('2560x2048')).toBe(true)
+  })
+
+  it('does not classify auto or invalid sizes as 4K', () => {
+    expect(isFourKImageSize('auto')).toBe(false)
+    expect(isFourKImageSize('invalid')).toBe(false)
   })
 })

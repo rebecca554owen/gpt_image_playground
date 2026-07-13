@@ -1970,6 +1970,7 @@ export default function InputBar() {
           onSelect={(size) => setParams({ size })}
           onClose={() => setShowSizePicker(false)}
           allowAuto={!isFalTextToImage}
+          imageCount={effectiveNValue}
         />
       )}
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { calculateImageSize, normalizeImageSize, parseRatio, type SizeTier } from '../lib/size'
+import { calculateImageSize, isFourKImageSize, normalizeImageSize, parseRatio, type SizeTier } from '../lib/size'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import ViewportTooltip from './ViewportTooltip'
 
@@ -21,6 +21,7 @@ interface Props {
   onSelect: (size: string) => void
   onClose: () => void
   allowAuto?: boolean
+  imageCount?: number
 }
 
 type Mode = 'auto' | 'ratio' | 'resolution'
@@ -43,7 +44,7 @@ function findPresetForSize(size: string) {
   return null
 }
 
-export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true }: Props) {
+export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, imageCount = 1 }: Props) {
   usePreventBackgroundScroll(true)
 
   const modalRef = useRef<HTMLDivElement>(null)
@@ -85,6 +86,8 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   // Resolution mode state
   const [customW, setCustomW] = useState(currentParsedSize?.width ?? '1024')
   const [customH, setCustomH] = useState(currentParsedSize?.height ?? '1024')
+  const [fourKAction, setFourKAction] = useState<'select' | 'apply' | null>(null)
+  const [fourKConfirmed, setFourKConfirmed] = useState(false)
 
   const [hintVisible, setHintVisible] = useState(false)
   const hintTimerRef = useRef<number | null>(null)
@@ -135,6 +138,9 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     return false
   }, [mode, ratio, customRatioClamped, customW, customH, previewSize])
 
+  const isFourKSelection = isFourKImageSize(previewSize)
+  const billedImageCount = Math.max(1, Math.trunc(imageCount) || 1)
+
   const showHint = () => setHintVisible(true)
   const hideHint = () => {
     setHintVisible(false)
@@ -155,8 +161,34 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
 
   const applySize = () => {
     if (!previewSize) return
+    if (isFourKSelection && !fourKConfirmed) {
+      setFourKAction('apply')
+      return
+    }
     onSelect(previewSize)
     onClose()
+  }
+
+  const selectTier = (item: SizeTier) => {
+    if (item === '4K' && tier !== '4K') {
+      setFourKAction('select')
+      return
+    }
+    setTier(item)
+    if (item !== '4K') setFourKConfirmed(false)
+  }
+
+  const confirmFourK = () => {
+    setFourKConfirmed(true)
+    if (fourKAction === 'select') {
+      setTier('4K')
+      setFourKAction(null)
+      return
+    }
+    if (fourKAction === 'apply' && previewSize) {
+      onSelect(previewSize)
+      onClose()
+    }
   }
 
   const buttonClass = (active: boolean) => {
@@ -240,13 +272,40 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             {mode === 'ratio' && (
               <div className="space-y-5 animate-fade-in">
                 <section>
-                  <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">基准分辨率</div>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-xs font-medium text-gray-400 dark:text-gray-500">输出清晰度</span>
+                    <span className="text-[10px] text-gray-400 dark:text-gray-500">尺寸自动匹配模型</span>
+                  </div>
                   <div className="grid grid-cols-3 gap-2">
-                    {TIERS.map((item) => (
-                      <button key={item} className={buttonClass(tier === item)} onClick={() => setTier(item)}>
-                        {item}
-                      </button>
-                    ))}
+                    {TIERS.map((item) => {
+                      const selected = tier === item
+                      const isFourK = item === '4K'
+                      return (
+                        <button
+                          key={item}
+                          aria-pressed={selected}
+                          onClick={() => selectTier(item)}
+                          className={`relative min-h-[78px] overflow-hidden rounded-2xl border px-2 py-2.5 text-left outline-none transition ${isFourK
+                            ? selected
+                              ? 'border-amber-400 bg-gradient-to-br from-amber-50 via-orange-50 to-yellow-100 text-amber-950 shadow-[0_8px_24px_rgba(245,158,11,0.18)] ring-1 ring-amber-300/70 dark:border-amber-400/70 dark:from-amber-400/20 dark:via-orange-400/10 dark:to-yellow-300/10 dark:text-amber-100 dark:ring-amber-400/20'
+                              : 'border-amber-300/80 bg-gradient-to-br from-amber-50/90 via-white to-orange-50/80 text-amber-900 shadow-[0_6px_18px_rgba(245,158,11,0.10)] hover:-translate-y-0.5 hover:border-amber-400 hover:shadow-[0_10px_28px_rgba(245,158,11,0.18)] focus-visible:ring-2 focus-visible:ring-amber-300 dark:border-amber-400/30 dark:from-amber-400/10 dark:via-white/[0.03] dark:to-orange-400/[0.08] dark:text-amber-200'
+                            : selected
+                              ? 'border-blue-400 bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-200/80 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-blue-500/20'
+                              : 'border-gray-200/70 bg-white/60 text-gray-700 hover:border-blue-300 hover:bg-blue-50/40 focus-visible:ring-2 focus-visible:ring-blue-200 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-300 dark:hover:border-blue-500/40 dark:hover:bg-blue-500/[0.06]'
+                          }`}
+                        >
+                          {isFourK && (
+                            <span className="absolute right-1.5 top-1.5 rounded-full bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold leading-none text-white shadow-sm dark:bg-amber-400 dark:text-amber-950">
+                              10×
+                            </span>
+                          )}
+                          <span className="block text-sm font-bold">{isFourK ? '4K 超清' : item}</span>
+                          <span className={`mt-1 block text-[10px] leading-tight ${isFourK ? 'text-amber-700 dark:text-amber-300' : 'text-gray-400 dark:text-gray-500'}`}>
+                            {item === '1K' ? '快速预览 · 1×' : item === '2K' ? '标准出图 · 1×' : '高精交付 · 推荐'}
+                          </span>
+                        </button>
+                      )
+                    })}
                   </div>
                 </section>
 
@@ -344,10 +403,16 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             )}
           </div>
 
-          <div className="rounded-2xl bg-gray-50 px-4 py-3 dark:bg-white/[0.03]">
-            <div className="text-xs text-gray-400 dark:text-gray-500">将使用</div>
+          <div className={`rounded-2xl border px-4 py-3 transition ${isFourKSelection
+            ? 'border-amber-300/80 bg-gradient-to-r from-amber-50 to-orange-50 shadow-[0_8px_28px_rgba(245,158,11,0.12)] dark:border-amber-400/25 dark:from-amber-400/10 dark:to-orange-400/[0.06]'
+            : 'border-transparent bg-gray-50 dark:bg-white/[0.03]'
+          }`}>
+            <div className={`flex items-center justify-between gap-3 text-xs ${isFourKSelection ? 'text-amber-700 dark:text-amber-300' : 'text-gray-400 dark:text-gray-500'}`}>
+              <span>将使用</span>
+              {isFourKSelection && <span className="rounded-full bg-amber-500 px-2 py-0.5 font-bold text-white dark:bg-amber-400 dark:text-amber-950">4K · 单张 10×</span>}
+            </div>
             <div className="mt-1 flex items-center gap-2">
-              <span className="font-mono text-lg font-semibold text-gray-800 dark:text-gray-100">
+              <span className={`font-mono text-lg font-semibold ${isFourKSelection ? 'text-amber-950 dark:text-amber-100' : 'text-gray-800 dark:text-gray-100'}`}>
                 {previewSize || '尺寸无效'}
               </span>
               {isClamped && (
@@ -369,6 +434,13 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                 </div>
               )}
             </div>
+            {isFourKSelection && (
+              <div className="mt-1.5 text-xs font-medium text-amber-800 dark:text-amber-300">
+                {billedImageCount > 1
+                  ? `本次 ${billedImageCount} 张，每张按 10× 计费，约等于 ${billedImageCount * 10} 张标准图费用`
+                  : '本次 1 张按 10× 计费，约等于 10 张标准图费用'}
+              </div>
+            )}
           </div>
         </div>
 
@@ -382,12 +454,72 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
           <button
             onClick={applySize}
             disabled={!previewSize}
-            className="flex-1 rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+            className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50 ${isFourKSelection
+              ? 'bg-gradient-to-r from-amber-500 to-orange-500 shadow-[0_8px_20px_rgba(245,158,11,0.25)] hover:from-amber-600 hover:to-orange-600'
+              : 'bg-blue-500 hover:bg-blue-600'
+            }`}
           >
-            确定
+            {isFourKSelection ? '确认使用 4K（10×）' : '确定'}
           </button>
         </div>
       </div>
+
+      {fourKAction && (
+        <div
+          className="absolute inset-0 z-20 flex items-center justify-center p-4"
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+          onClick={() => setFourKAction(null)}
+        >
+          <div className="absolute inset-0 bg-amber-950/45 backdrop-blur-md animate-overlay-in" />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="four-k-warning-title"
+            className="relative w-full max-w-sm overflow-hidden rounded-3xl border border-amber-300/80 bg-white shadow-[0_24px_80px_rgba(120,53,15,0.34)] ring-1 ring-amber-950/10 animate-confirm-in dark:border-amber-400/30 dark:bg-gray-900 dark:ring-amber-300/10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-gradient-to-br from-amber-400 via-orange-400 to-orange-500 px-6 pb-5 pt-6 text-white">
+              <div className="flex items-center justify-between gap-4">
+                <span className="rounded-full border border-white/30 bg-white/20 px-2.5 py-1 text-[11px] font-bold tracking-wide backdrop-blur-sm">4K PREMIUM</span>
+                <span className="rounded-full bg-white px-3 py-1 text-sm font-black text-orange-600 shadow-sm">单张 10×</span>
+              </div>
+              <h4 id="four-k-warning-title" className="mt-5 text-xl font-black tracking-tight">确认使用 4K 超清出图？</h4>
+              <p className="mt-1 text-sm font-medium text-white/90">高质量交付推荐使用，但费用明显更高</p>
+            </div>
+
+            <div className="px-6 py-5">
+              <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-orange-950 dark:border-orange-400/20 dark:bg-orange-400/10 dark:text-orange-100">
+                <div className="text-sm font-bold">
+                  {billedImageCount > 1 ? `本次将生成 ${billedImageCount} 张 4K 图片` : '本次将生成 1 张 4K 图片'}
+                </div>
+                <div className="mt-1 text-xs font-medium leading-relaxed text-orange-800 dark:text-orange-300">
+                  {billedImageCount > 1
+                    ? `每张都按 10× 计费，合计约等于 ${billedImageCount * 10} 张 1K–2K 标准图费用。`
+                    : '按 10× 计费，约等于 10 张 1K–2K 标准图费用。'}
+                </div>
+              </div>
+              <p className="mt-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                系统会自动切换到 <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px] text-gray-700 dark:bg-white/[0.06] dark:text-gray-300">gpt-image-2-4k</code>，无需手动配置模型。
+              </p>
+              <div className="mt-5 flex gap-2">
+                <button
+                  onClick={() => setFourKAction(null)}
+                  className="flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm font-medium text-gray-600 transition hover:bg-gray-50 dark:border-white/[0.08] dark:text-gray-300 dark:hover:bg-white/[0.06]"
+                >
+                  先用 1K–2K
+                </button>
+                <button
+                  onClick={confirmFourK}
+                  className="flex-1 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-2.5 text-sm font-bold text-white shadow-[0_8px_20px_rgba(245,158,11,0.28)] transition hover:from-amber-600 hover:to-orange-600"
+                >
+                  确认 4K · 10×
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

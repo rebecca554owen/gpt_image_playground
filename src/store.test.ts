@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from './types'
-import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
+import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, FOUR_K_IMAGES_MODEL, normalizeSettings } from './lib/apiProfiles'
 import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
 vi.mock('./lib/db', () => {
@@ -337,6 +337,35 @@ describe('mask draft lifecycle in store actions', () => {
     const state = useStore.getState()
     expect(state.tasks).toHaveLength(1)
     expect(state.showToast).toHaveBeenCalledWith('任务已提交', 'success')
+  })
+
+  it('requires a final billing confirmation for multiple 4K images', async () => {
+    useStore.setState({ params: { ...DEFAULT_PARAMS, size: '3840x2160', n: 3 } })
+
+    await submitTask()
+
+    const state = useStore.getState()
+    expect(state.tasks).toEqual([])
+    expect(state.setConfirmDialog).toHaveBeenCalledWith(expect.objectContaining({
+      title: '确认多张 4K 计费',
+      message: expect.stringContaining('30 张 1K–2K 标准图费用'),
+      confirmText: '确认生成 3 张 4K',
+      tone: 'warning',
+    }))
+  })
+
+  it('fixes the task model to the 4K model after billing confirmation', async () => {
+    const { callImageApi } = await import('./lib/api')
+    vi.mocked(callImageApi).mockClear()
+    useStore.setState({ params: { ...DEFAULT_PARAMS, size: '3840x2160', n: 3 } })
+
+    await submitTask({ allowFourKBilling: true })
+    for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useStore.getState().tasks[0].apiModel).toBe(FOUR_K_IMAGES_MODEL)
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      settings: expect.objectContaining({ model: FOUR_K_IMAGES_MODEL }),
+    }))
   })
 
   it('stores decoded image size as actual size when the API omits size', async () => {

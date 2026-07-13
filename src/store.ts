@@ -51,6 +51,8 @@ import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
+import { getImageModelForSize } from './lib/imageModelSelection'
+import { isFourKImageSize } from './lib/size'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
@@ -2357,7 +2359,7 @@ export async function initStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}) {
+export async function submitTask(options: { allowFullMask?: boolean; allowFourKBilling?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}) {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
     useStore.getState()
 
@@ -2395,6 +2397,21 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 
   if (!prompt.trim()) {
     showToast('请输入提示词', 'error')
+    return
+  }
+
+  const billedImageCount = Math.max(1, Math.trunc(params.n) || 1)
+  if (!options.allowFourKBilling && isFourKImageSize(params.size) && billedImageCount > 1) {
+    setConfirmDialog({
+      title: '确认多张 4K 计费',
+      message: `本次将生成 **${billedImageCount} 张 4K 图片**，每张都按 **10× 费用**计费，合计约等于 **${billedImageCount * 10} 张 1K–2K 标准图费用**。\n\n请确认费用后再继续提交。`,
+      confirmText: `确认生成 ${billedImageCount} 张 4K`,
+      cancelText: '返回调整',
+      tone: 'warning',
+      action: () => {
+        void submitTask({ ...options, allowFourKBilling: true })
+      },
+    })
     return
   }
 
@@ -2457,7 +2474,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     apiProfileId: activeProfile.id,
     apiProfileName: activeProfile.name,
     apiMode: activeProfile.apiMode,
-    apiModel: activeProfile.model,
+    apiModel: getImageModelForSize(activeProfile, taskParams.size),
     inputImageIds: orderedInputImages.map((i) => i.id),
     maskTargetImageId,
     maskImageId,
@@ -4692,8 +4709,11 @@ async function executeTask(taskId: string) {
     return
   }
   const activeProfile = taskProfile ?? getActiveApiProfile(settings)
-  const requestSettings = createSettingsForApiProfile(settings, activeProfile)
-  const taskProvider = task.apiProvider ?? activeProfile.provider
+  const requestProfile = task.apiModel && task.apiModel !== activeProfile.model
+    ? { ...activeProfile, model: task.apiModel }
+    : activeProfile
+  const requestSettings = createSettingsForApiProfile(settings, requestProfile)
+  const taskProvider = task.apiProvider ?? requestProfile.provider
   let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint
         ? { requestId: task.falRequestId, endpoint: task.falEndpoint }
     : null
@@ -4704,9 +4724,9 @@ async function executeTask(taskId: string) {
   if (
     taskProvider !== 'fal' &&
     !isAsyncCustomProviderTask(requestSettings, taskProvider, task.inputImageIds.length > 0) &&
-    !usesConcurrentOpenAIImageRequests(activeProfile, task.params)
+    !usesConcurrentOpenAIImageRequests(requestProfile, task.params)
   ) {
-    scheduleOpenAIWatchdog(taskId, activeProfile.timeout, activeProfile)
+    scheduleOpenAIWatchdog(taskId, requestProfile.timeout, requestProfile)
   }
 
   try {
@@ -5107,7 +5127,7 @@ async function startRetryTask(task: TaskRecord) {
     apiProfileId: activeProfile.id,
     apiProfileName: activeProfile.name,
     apiMode: activeProfile.apiMode,
-    apiModel: activeProfile.model,
+    apiModel: getImageModelForSize(activeProfile, taskParams.size),
     inputImageIds: [...task.inputImageIds],
     maskTargetImageId: task.maskTargetImageId ?? null,
     maskImageId: task.maskImageId ?? null,
