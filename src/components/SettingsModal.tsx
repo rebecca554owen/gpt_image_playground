@@ -44,6 +44,23 @@ function newId(prefix: string) {
 
 const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
 const COPY_IMPORT_URL_OPTIONS_STORAGE_KEY = 'gpt-image-playground.copy-import-url-options'
+const IMAGE_MODEL_OPTIONS = [
+  {
+    model: DEFAULT_IMAGES_MODEL,
+    title: '2K 标准出图',
+    resolution: '1K–2K 分辨率',
+    cost: '1× 基础费用',
+    costMultiplier: 1,
+  },
+  {
+    model: 'gpt-image-2-4k',
+    title: '4K 高清出图',
+    resolution: '4K 超清分辨率',
+    cost: '10× 费用',
+    costMultiplier: 10,
+    recommended: true,
+  },
+] as const
 
 const DEFAULT_COPY_IMPORT_URL_OPTIONS = {
   includeApiKey: false,
@@ -1583,9 +1600,11 @@ export default function SettingsModal() {
                     value={activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode}
                     onChange={(value) => {
                       const apiMode = value as AppSettings['apiMode']
-                      const nextModel =
-                        activeProfile.model === DEFAULT_IMAGES_MODEL || activeProfile.model === DEFAULT_RESPONSES_MODEL
-                          ? getDefaultModelForMode(apiMode)
+                      const isFixedImageModel = IMAGE_MODEL_OPTIONS.some((option) => option.model === activeProfile.model)
+                      const nextModel = apiMode === 'images'
+                        ? isFixedImageModel ? activeProfile.model : DEFAULT_IMAGES_MODEL
+                        : isFixedImageModel || activeProfile.model === DEFAULT_RESPONSES_MODEL
+                          ? DEFAULT_RESPONSES_MODEL
                           : activeProfile.model
                       updateActiveProfile({ apiMode, model: nextModel }, true)
                     }}
@@ -1602,33 +1621,101 @@ export default function SettingsModal() {
               )}
 
               {/* 7. 模型 ID（紧跟接口选择） */}
-              <label className="block">
+              <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
-                  模型 ID
+                  {(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'images' && activeProfile.provider === 'openai'
+                    ? '出图清晰度'
+                    : '模型 ID'}
                 </span>
-                <input
-                  value={activeProfile.model}
-                  onChange={(e) => updateActiveProfile({ model: e.target.value })}
-                  onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
-                  type="text"
-                  placeholder={activeProfile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
-                  className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
-                />
-                <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                  {activeProfile.provider === 'fal' ? (
-                    <>当前适配 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_FAL_MODEL}</code>。</>
-                  ) : activeCustomProvider ? (
-                    <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
-                  ) : (activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' ? (
-                    <>Responses API 需要使用支持 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">image_generation</code> 工具的文本模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_RESPONSES_MODEL}</code>。</>
-                  ) : (
-                    <>Images API 需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。</>
-                  )}
-                  {activeProfile.provider === 'openai' && (
-                    <>支持通过查询参数覆盖：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
-                  )}
-                </div>
-              </label>
+                {(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'images' && activeProfile.provider === 'openai' ? (
+                  <>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="radiogroup" aria-label="出图清晰度">
+                      {IMAGE_MODEL_OPTIONS.map((option) => {
+                        const selected = activeProfile.model === option.model
+                        return (
+                          <button
+                            key={option.model}
+                            type="button"
+                            role="radio"
+                            aria-checked={selected}
+                            onClick={() => updateActiveProfile({ model: option.model }, true)}
+                            className={`min-h-[108px] rounded-2xl border p-3.5 text-left outline-none transition ${selected
+                              ? 'border-blue-400 bg-blue-50/80 shadow-sm ring-1 ring-blue-200/80 dark:border-blue-500/70 dark:bg-blue-500/10 dark:ring-blue-500/20'
+                              : 'border-gray-200/80 bg-white/50 hover:border-blue-300 hover:bg-blue-50/40 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-200 dark:border-white/[0.08] dark:bg-white/[0.02] dark:hover:border-blue-500/50 dark:hover:bg-blue-500/[0.06] dark:focus-visible:ring-blue-500/30'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <span>
+                                <span className={`block text-sm font-semibold ${selected ? 'text-blue-700 dark:text-blue-300' : 'text-gray-700 dark:text-gray-200'}`}>
+                                  {option.title}
+                                </span>
+                                <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">
+                                  {option.resolution}
+                                </span>
+                              </span>
+                              <span className="flex shrink-0 flex-wrap justify-end gap-1">
+                                {'recommended' in option && option.recommended && (
+                                  <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-medium text-white dark:bg-blue-500">
+                                    推荐
+                                  </span>
+                                )}
+                                {selected && (
+                                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
+                                    已选择
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                              <code className="inline-block rounded-lg bg-gray-100/80 px-2 py-1 text-[11px] text-gray-500 dark:bg-white/[0.06] dark:text-gray-400">
+                                {option.model}
+                              </code>
+                              <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${option.costMultiplier === 10
+                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-400/15 dark:text-amber-300'
+                                : 'bg-gray-100 text-gray-600 dark:bg-white/[0.06] dark:text-gray-400'
+                              }`}>
+                                {option.cost}
+                              </span>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {!IMAGE_MODEL_OPTIONS.some((option) => option.model === activeProfile.model) && (
+                      <div className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                        当前配置使用了旧模型，请选择上方 2K 或 4K 后继续。
+                      </div>
+                    )}
+                    <div data-selectable-text className="mt-2.5 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/[0.08] dark:text-amber-300">
+                      <span className="font-semibold">4K 按 10× 计费：</span>
+                      单张费用是 1K–2K 的 10 倍。高精度交付或大图展示时推荐 4K；日常预览或需要控制成本时，请选择 2K。
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      value={activeProfile.model}
+                      onChange={(e) => updateActiveProfile({ model: e.target.value })}
+                      onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
+                      type="text"
+                      placeholder={activeProfile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
+                      className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                    />
+                    <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
+                      {activeProfile.provider === 'fal' ? (
+                        <>当前适配 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_FAL_MODEL}</code>。</>
+                      ) : activeCustomProvider ? (
+                        <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
+                      ) : (
+                        <>Responses API 需要使用支持 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">image_generation</code> 工具的文本模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_RESPONSES_MODEL}</code>。</>
+                      )}
+                      {activeProfile.provider === 'openai' && (
+                        <>支持通过查询参数覆盖：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
 
               {/* 8. 流式传输 + 中间步骤图像数 */}
               {activeProfile.provider === 'openai' && (
