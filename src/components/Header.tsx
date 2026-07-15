@@ -6,7 +6,7 @@ import ViewportTooltip from './ViewportTooltip'
 import HelpModal from './HelpModal'
 import HistoryModal from './HistoryModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
-import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
+import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon, TicketIcon } from './icons'
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -235,6 +235,17 @@ export default function Header() {
             </button>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            <a
+              href="https://ycnfsn8b2u4z.feishu.cn/share/base/form/shrcnPtwhVW5dCX2QNZ8zxNmf7z"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-2.5 text-sm font-medium text-white shadow-sm shadow-blue-500/20 transition-all hover:-translate-y-0.5 hover:from-blue-500 hover:to-indigo-500 hover:shadow-md hover:shadow-blue-500/25 active:translate-y-0 dark:from-blue-500 dark:to-indigo-500 dark:hover:from-blue-400 dark:hover:to-indigo-400 sm:px-3"
+              aria-label="提交工单"
+              title="提交工单"
+            >
+              <TicketIcon className="h-4.5 w-4.5" />
+              <span className="hidden md:inline">提交工单</span>
+            </a>
             {!isPwaInstalled && (
               <div
                 className="relative"
