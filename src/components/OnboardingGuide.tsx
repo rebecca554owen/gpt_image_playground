@@ -424,25 +424,19 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
           </section>
 
           <div className={`px-2 pb-2 pt-3 ${modalStep ? 'sm:px-8 sm:pt-5' : 'sm:flex sm:items-center sm:justify-between sm:gap-4 sm:px-5'}`}>
-            <ol className={`flex max-w-2xl items-center gap-1 text-[11px] font-medium text-white/55 sm:gap-3 sm:text-sm ${modalStep ? 'mx-auto justify-center' : 'justify-center sm:justify-start'}`} aria-label="新手引导进度">
-              {steps.map((item, index) => (
-                <li key={item.badge} className="flex min-w-0 items-center gap-1.5 sm:gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setStep(index)}
-                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
-                    aria-current={index === step ? 'step' : undefined}
-                    aria-label={`第 ${index + 1} 步：${item.badge}`}
-                  >
-                    <span className={`flex h-7 w-7 items-center justify-center rounded-full border text-xs font-bold transition ${index === step ? 'border-white bg-[#3157ea] text-white shadow-[0_0_24px_rgba(91,115,255,0.8)]' : index < step ? 'border-white/50 bg-white/15 text-white' : 'border-white/30 bg-black/10 text-white/60'}`}>
-                      {index < step ? <Check className="h-3.5 w-3.5" weight="bold" /> : index + 1}
-                    </span>
-                  </button>
-                  <span className={`${modalStep ? 'hidden sm:inline' : 'hidden'} whitespace-nowrap ${index === step ? 'font-semibold text-white' : ''}`}>{item.badge}</span>
-                  {index < steps.length - 1 ? <span className="mx-0.5 h-px w-3 bg-white/25 sm:mx-1 sm:w-8" /> : null}
-                </li>
-              ))}
-            </ol>
+            <div className={`flex justify-center ${modalStep ? '' : 'sm:justify-start'}`}>
+              <div
+                role="status"
+                aria-live="polite"
+                aria-label={`第 ${step + 1} 步，共 ${steps.length} 步`}
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-white/20 bg-black/10 px-3.5 text-xs font-semibold text-white/75 shadow-sm backdrop-blur-md"
+              >
+                <span className="h-2 w-2 rounded-full bg-blue-400 shadow-[0_0_14px_rgba(96,165,250,0.95)]" />
+                第 <span className="text-sm font-bold text-white">{step + 1}</span>
+                <span className="text-white/35">/</span>
+                {steps.length} 步
+              </div>
+            </div>
 
             <div className={`flex items-center justify-center gap-3 ${modalStep ? 'mt-4' : 'mt-3 sm:mt-0 sm:justify-end'}`}>
               {step > 0 ? (

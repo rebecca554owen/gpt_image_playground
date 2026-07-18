@@ -6,6 +6,7 @@ type ScrollDelta = { x: number; y: number }
 let lockCount = 0
 let previousBodyOverflow = ''
 let previousBodyOverscrollBehavior = ''
+let previousDocumentOverflow = ''
 let previousDocumentOverscrollBehavior = ''
 
 function getAllowedRoot(target: EventTarget | null, allowRefs?: ScrollBoundaryRef | ScrollBoundaryRef[]) {
@@ -67,9 +68,11 @@ export function usePreventBackgroundScroll(active: boolean, allowRefs?: ScrollBo
     if (lockCount === 0) {
       previousBodyOverflow = document.body.style.overflow
       previousBodyOverscrollBehavior = document.body.style.overscrollBehavior
+      previousDocumentOverflow = document.documentElement.style.overflow
       previousDocumentOverscrollBehavior = document.documentElement.style.overscrollBehavior
       document.body.style.overflow = 'hidden'
       document.body.style.overscrollBehavior = 'none'
+      document.documentElement.style.overflow = 'hidden'
       document.documentElement.style.overscrollBehavior = 'none'
     }
     lockCount += 1
@@ -119,9 +122,9 @@ export function usePreventBackgroundScroll(active: boolean, allowRefs?: ScrollBo
       if (lockCount === 0) {
         document.body.style.overflow = previousBodyOverflow
         document.body.style.overscrollBehavior = previousBodyOverscrollBehavior
+        document.documentElement.style.overflow = previousDocumentOverflow
         document.documentElement.style.overscrollBehavior = previousDocumentOverscrollBehavior
       }
     }
   }, [active, allowRefs])
 }
-
