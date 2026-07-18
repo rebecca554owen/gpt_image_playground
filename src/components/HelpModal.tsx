@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { Sparkle } from '@phosphor-icons/react'
 import type { AppMode } from '../types'
 import { useStore } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
@@ -10,6 +11,7 @@ interface HelpModalProps {
   appMode: AppMode
   isFavoriteCollectionOverview?: boolean
   onClose: () => void
+  onShowOnboarding?: () => void
 }
 
 function useIsMobile() {
@@ -22,7 +24,7 @@ function useIsMobile() {
   return isMobile
 }
 
-export default function HelpModal({ appMode, isFavoriteCollectionOverview = false, onClose }: HelpModalProps) {
+export default function HelpModal({ appMode, isFavoriteCollectionOverview = false, onClose, onShowOnboarding }: HelpModalProps) {
   const isMobile = useIsMobile()
   const modalRef = useRef<HTMLDivElement>(null)
   const isAgentMode = appMode === 'agent'
@@ -173,7 +175,17 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
           )}
         </div>
 
-        <div className="pt-4 border-t border-gray-200 dark:border-white/[0.08] flex justify-center">
+        <div className="flex flex-col items-center gap-3 border-t border-gray-200 pt-4 dark:border-white/[0.08]">
+          {appMode === 'gallery' && !isFavoriteCollectionOverview && onShowOnboarding ? (
+            <button
+              type="button"
+              onClick={onShowOnboarding}
+              className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-blue-50 px-4 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:bg-blue-500/10 dark:text-blue-300 dark:hover:bg-blue-500/20"
+            >
+              <Sparkle className="h-4 w-4" weight="fill" />
+              重新查看新手引导
+            </button>
+          ) : null}
           <a
             href={purchaseUrl}
             target="_blank"

@@ -2063,6 +2063,7 @@ export default function InputBar() {
             )}
             <div
               ref={textareaRef}
+              data-onboarding="prompt"
               contentEditable
               suppressContentEditableWarning
               onInput={(e) => {
@@ -2175,6 +2176,7 @@ export default function InputBar() {
                 >
                   <ButtonTooltip visible={attachHover} text={uploadImageTooltipText} />
                   <button
+                    data-onboarding="upload"
                     onClick={() => !atImageLimit && fileInputRef.current?.click()}
                     className={`p-2.5 rounded-xl transition-all shadow-sm ${
                       atImageLimit
@@ -2195,6 +2197,7 @@ export default function InputBar() {
                 >
                   <ButtonTooltip visible={(activeAgentIsRunning || !hasSubmitApiConfig) && submitHover} text={submitTooltipText} />
                   <button
+                    data-onboarding="generate"
                     onClick={() => activeAgentIsRunning ? stopActiveAgentResponse() : hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
                     disabled={activeAgentIsRunning ? false : hasSubmitApiConfig ? !canSubmit : false}
                     className={`p-2.5 rounded-xl transition-all shadow-sm hover:shadow ${
@@ -2236,6 +2239,7 @@ export default function InputBar() {
                   onMouseLeave={() => setAttachHover(false)}
                 >
                   <button
+                    data-onboarding="upload"
                     onClick={() => {
                       if (!atImageLimit) {
                         setShowMobileUploadMenu(!showMobileUploadMenu)
@@ -2302,6 +2306,7 @@ export default function InputBar() {
                 >
                   <ButtonTooltip visible={(activeAgentIsRunning || !hasSubmitApiConfig) && submitHover} text={submitTooltipText} />
                   <button
+                    data-onboarding="generate"
                     onClick={() => activeAgentIsRunning ? stopActiveAgentResponse() : hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
                     disabled={activeAgentIsRunning ? false : hasSubmitApiConfig ? !canSubmit : false}
                     aria-label={submitButtonAriaLabel}

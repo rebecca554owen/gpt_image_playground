@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { initStore } from './store'
 import { useStore } from './store'
 import { activateFirstImportedProfile, buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
@@ -12,6 +12,7 @@ import TaskGrid from './components/TaskGrid'
 import AgentWorkspace from './components/AgentWorkspace'
 import VideoWorkspace from './components/VideoWorkspace'
 import InputBar from './components/InputBar'
+import OnboardingGuide from './components/OnboardingGuide'
 import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
 import SettingsModal from './components/SettingsModal'
@@ -26,6 +27,7 @@ import { useGlobalClickSuppression } from './lib/clickSuppression'
 let customProviderConfigUrlImportStarted = false
 
 export default function App() {
+  const [storeReady, setStoreReady] = useState(false)
   const setSettings = useStore((s) => s.setSettings)
   const appMode = useStore((s) => s.appMode)
   const filterFavorite = useStore((s) => s.filterFavorite)
@@ -34,9 +36,17 @@ export default function App() {
   useGlobalClickSuppression()
 
   useEffect(() => {
+    let cancelled = false
     const searchParams = new URLSearchParams(window.location.search)
     const customProviderConfigUrl = getCustomProviderConfigUrl()
     const defaultConfigOnly = isDefaultConfigOnlyEnabled()
+    const initializeStore = () => {
+      void initStore()
+        .catch((error) => console.error('Failed to initialize store:', error))
+        .finally(() => {
+          if (!cancelled) setStoreReady(true)
+        })
+    }
 
     const applyUrlSettings = (baseSettings: Partial<AppSettings>) => {
       const nextSettings = buildSettingsFromUrlParams(baseSettings, searchParams)
@@ -71,8 +81,10 @@ export default function App() {
           clearAppliedUrlSettings()
         })
 
-      initStore()
-      return
+      initializeStore()
+      return () => {
+        cancelled = true
+      }
     }
 
     const nextSettings = buildSettingsFromUrlParams(useStore.getState().settings, searchParams)
@@ -94,7 +106,10 @@ export default function App() {
         })
     }
 
-    initStore()
+    initializeStore()
+    return () => {
+      cancelled = true
+    }
   }, [setSettings])
 
   useEffect(() => {
@@ -124,6 +139,7 @@ export default function App() {
         </main>
       )}
       {appMode !== 'video' && <InputBar />}
+      <OnboardingGuide ready={storeReady} />
       <DetailModal />
       <Lightbox />
       <SettingsModal />

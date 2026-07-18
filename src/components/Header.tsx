@@ -343,7 +343,17 @@ export default function Header() {
           </div>
         </div>
       </div>
-      {showHelp && <HelpModal appMode={appMode} isFavoriteCollectionOverview={appMode === 'gallery' && filterFavorite && !activeFavoriteCollectionId} onClose={() => setShowHelp(false)} />}
+      {showHelp && (
+        <HelpModal
+          appMode={appMode}
+          isFavoriteCollectionOverview={appMode === 'gallery' && filterFavorite && !activeFavoriteCollectionId}
+          onClose={() => setShowHelp(false)}
+          onShowOnboarding={() => {
+            setShowHelp(false)
+            window.dispatchEvent(new Event('open-image-onboarding'))
+          }}
+        />
+      )}
     </>
   )
 }
