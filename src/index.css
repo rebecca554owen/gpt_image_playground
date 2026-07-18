@@ -325,14 +325,14 @@ input[type="number"] {
 
 @media (min-width: 640px) {
   .onboarding-guide-shell {
-    --onboarding-panel-top: clamp(5rem, 17vh, 10rem);
+    --onboarding-panel-top: clamp(0.75rem, calc(36vh - 10rem), 10rem);
   }
 }
 
 @keyframes onboarding-pointer-motion {
   0%, 100% { transform: translateX(0) translateY(0); }
-  45% { transform: translateX(22px) translateY(5px); }
-  55% { transform: translateX(22px) translateY(5px) scale(0.96); }
+  45% { transform: translateX(var(--onboarding-pointer-x, 10px)) translateY(var(--onboarding-pointer-y, 5px)); }
+  55% { transform: translateX(var(--onboarding-pointer-x, 10px)) translateY(var(--onboarding-pointer-y, 5px)) scale(0.96); }
 }
 .onboarding-pointer-motion {
   animation: onboarding-pointer-motion 2.1s cubic-bezier(0.65, 0, 0.35, 1) infinite;

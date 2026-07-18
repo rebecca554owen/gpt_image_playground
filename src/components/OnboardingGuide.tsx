@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -228,6 +229,12 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
   }, [modalStep, visible])
 
   useEffect(() => {
+    if (!visible || modalStep) return
+    const frame = window.requestAnimationFrame(() => panelRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [modalStep, step, visible])
+
+  useEffect(() => {
     if (!activePreview) return
     const frame = window.requestAnimationFrame(() => previewRef.current?.focus())
 
@@ -266,6 +273,25 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
     : currentStep.target === 'upload'
     ? '点击这里上传参考图'
     : '点击这里开始生成'
+  const viewportTop = window.visualViewport?.offsetTop ?? 0
+  const viewportLeft = window.visualViewport?.offsetLeft ?? 0
+  const viewportRight = viewportLeft + (window.visualViewport?.width ?? window.innerWidth)
+  const viewportBottom = viewportTop + (window.visualViewport?.height ?? window.innerHeight)
+  const hasPointerRoomRight = targetRect ? viewportRight - targetRect.right >= 188 : false
+  const hasPointerRoomBelow = targetRect ? viewportBottom - targetRect.bottom >= 56 : false
+  const pointerPlacement = hasPointerRoomRight ? 'right' : hasPointerRoomBelow ? 'below' : 'above'
+  const pointerStyle = targetRect ? {
+    top: pointerPlacement === 'right'
+      ? Math.max(viewportTop + 8, Math.min(viewportBottom - 48, targetRect.top + Math.max(6, (targetRect.height - 36) / 2)))
+      : pointerPlacement === 'below'
+      ? targetRect.bottom + 10
+      : Math.max(viewportTop + 8, targetRect.top - 48),
+    left: pointerPlacement === 'right'
+      ? targetRect.right + 12
+      : Math.max(viewportLeft + 10, Math.min(viewportRight - 190, targetRect.left + Math.min(34, targetRect.width / 4))),
+    '--onboarding-pointer-x': pointerPlacement === 'above' ? '10px' : '-10px',
+    '--onboarding-pointer-y': pointerPlacement === 'above' ? '6px' : '-5px',
+  } as CSSProperties : undefined
 
   return createPortal(
     <div data-no-drag-select className="pointer-events-none fixed inset-0 z-[160]">
@@ -280,13 +306,10 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
             style={{ top: targetRect.top, left: targetRect.left, width: targetRect.width, height: targetRect.height }}
           />
           <div
-            className="fixed z-20 flex items-center gap-2 rounded-xl bg-[#3157ea] px-3 py-2 text-xs font-semibold text-white shadow-[0_12px_34px_rgba(49,87,234,0.42)] onboarding-pointer-motion"
-            style={{
-              top: Math.max(8, targetRect.top - 48),
-              left: Math.max(10, Math.min(window.innerWidth - 210, targetRect.left + Math.min(34, targetRect.width / 4))),
-            }}
+            className="fixed z-20 flex max-w-[calc(100vw-1.25rem)] items-center gap-2 whitespace-nowrap rounded-xl bg-[#3157ea] px-3 py-2 text-xs font-semibold text-white shadow-[0_12px_34px_rgba(49,87,234,0.42)] onboarding-pointer-motion"
+            style={pointerStyle}
           >
-            <CursorClick className="h-5 w-5" weight="fill" />
+            <CursorClick className={`h-5 w-5 shrink-0 transition-transform ${pointerPlacement === 'above' ? 'rotate-180' : ''}`} weight="fill" />
             {pointerLabel}
           </div>
         </>
@@ -303,14 +326,14 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
           aria-labelledby="onboarding-title"
           inert={activePreview ? true : undefined}
           tabIndex={-1}
-          className="pointer-events-auto w-full max-w-5xl overflow-y-auto rounded-[1.8rem] outline-none onboarding-panel-in"
+          className={`pointer-events-auto w-full overflow-y-auto rounded-[1.8rem] outline-none onboarding-panel-in ${modalStep ? 'max-w-5xl' : 'max-w-3xl'}`}
           style={{
             maxHeight: targetRect
-              ? 'calc(100vh - var(--input-bar-clearance, 220px) - var(--onboarding-panel-top) - 1rem)'
+              ? `max(11rem, calc(${targetRect.top}px - var(--onboarding-panel-top) - ${pointerPlacement === 'above' ? '3.75rem' : '0.75rem'}))`
               : 'calc(100vh - var(--onboarding-panel-top) - 0.75rem)',
           }}
         >
-          <section className="relative overflow-hidden rounded-[1.8rem] border border-white/65 bg-white/90 p-5 shadow-[0_28px_90px_rgba(15,23,42,0.32)] ring-1 ring-black/5 backdrop-blur-2xl dark:border-white/[0.1] dark:bg-gray-950/90 dark:ring-white/[0.08] sm:p-8">
+          <section className={`relative overflow-hidden rounded-[1.8rem] border border-white/65 bg-white/90 shadow-[0_28px_90px_rgba(15,23,42,0.32)] ring-1 ring-black/5 backdrop-blur-2xl dark:border-white/[0.1] dark:bg-gray-950/90 dark:ring-white/[0.08] ${modalStep ? 'p-5 sm:p-8' : 'p-4 sm:p-5'}`}>
             <button
               type="button"
               onClick={close}
@@ -320,9 +343,9 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
               <X className="h-5 w-5" weight="bold" />
             </button>
 
-            <div className="grid items-center gap-7 sm:grid-cols-[0.93fr_1.07fr] sm:gap-9">
-              <div className="min-w-0 pr-8 sm:border-r sm:border-gray-200/80 sm:pr-9 dark:sm:border-white/[0.08]">
-                <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-[#3157ea] px-3.5 py-2 text-xs font-semibold text-white shadow-[0_8px_24px_rgba(49,87,234,0.3)]">
+            <div className={modalStep ? 'grid items-center gap-7 sm:grid-cols-[0.93fr_1.07fr] sm:gap-9' : ''}>
+              <div className={modalStep ? 'min-w-0 pr-8 sm:border-r sm:border-gray-200/80 sm:pr-9 dark:sm:border-white/[0.08]' : 'min-w-0 pr-10'}>
+                <div className={`inline-flex items-center gap-2 rounded-full bg-[#3157ea] px-3.5 py-2 text-xs font-semibold text-white shadow-[0_8px_24px_rgba(49,87,234,0.3)] ${modalStep ? 'mb-5' : 'mb-3'}`}>
                   {step === 0 ? <Key className="h-4 w-4" weight="bold" /> : null}
                   {step === 1 ? <Sparkle className="h-4 w-4" weight="fill" /> : null}
                   {step === 2 ? <UploadSimple className="h-4 w-4" weight="bold" /> : null}
@@ -330,18 +353,20 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
                   {currentStep.badge}
                 </div>
 
-                <h2 id="onboarding-title" className="text-[1.75rem] font-bold leading-tight tracking-tight text-gray-900 dark:text-white sm:text-[2.1rem]">
+                <h2 id="onboarding-title" className={`font-bold leading-tight tracking-tight text-gray-900 dark:text-white ${modalStep ? 'text-[1.75rem] sm:text-[2.1rem]' : 'text-[1.5rem] sm:text-[1.75rem]'}`}>
                   {currentStep.title}<span className="text-[#3157ea] dark:text-blue-400">{currentStep.accent}</span>
                 </h2>
-                <p className="mt-4 text-[15px] leading-7 text-gray-600 dark:text-gray-300">
+                <p className={`text-[15px] text-gray-600 dark:text-gray-300 ${modalStep ? 'mt-4 leading-7' : 'mt-2 leading-6'}`}>
                   {currentStep.description}
                 </p>
 
-                <div className="mt-5 flex flex-wrap gap-2 text-xs font-medium text-gray-600 dark:text-gray-300">
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 dark:bg-white/[0.06]"><Check className="h-3.5 w-3.5 text-emerald-500" weight="bold" />共享原有额度</span>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 dark:bg-white/[0.06]"><Check className="h-3.5 w-3.5 text-emerald-500" weight="bold" />无需额外付费</span>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1.5 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"><Check className="h-3.5 w-3.5" weight="bold" />生图价格很低</span>
-                </div>
+                {modalStep ? (
+                  <div className="mt-5 flex flex-wrap gap-2 text-xs font-medium text-gray-600 dark:text-gray-300">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 dark:bg-white/[0.06]"><Check className="h-3.5 w-3.5 text-emerald-500" weight="bold" />共享原有额度</span>
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 dark:bg-white/[0.06]"><Check className="h-3.5 w-3.5 text-emerald-500" weight="bold" />无需额外付费</span>
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1.5 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"><Check className="h-3.5 w-3.5" weight="bold" />生图价格很低</span>
+                  </div>
+                ) : null}
 
                 {step === 1 ? (
                   <button
@@ -350,7 +375,7 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
                       setPrompt(SAMPLE_PROMPT)
                       window.setTimeout(() => getVisibleTarget('prompt')?.focus(), 0)
                     }}
-                    className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:bg-white dark:text-gray-900"
+                    className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:bg-white dark:text-gray-900"
                   >
                     <Sparkle className="h-4 w-4" weight="fill" />
                     写入示例提示词
@@ -358,46 +383,48 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
                 ) : null}
               </div>
 
-              <div className="min-w-0">
-                <div className="mb-3 pr-10">
-                  <div>
-                    <p className="text-sm font-semibold text-gray-900 dark:text-white">看看大家都在生成什么</p>
-                    <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">点击图片可放大查看</p>
+              {modalStep ? (
+                <div className="min-w-0">
+                  <div className="mb-3 pr-10">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-900 dark:text-white">看看大家都在生成什么</p>
+                      <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">点击图片可放大查看</p>
+                    </div>
+                  </div>
+
+                  <div className="grid h-36 grid-cols-3 items-center gap-2 sm:h-64 sm:gap-3">
+                    {samples.map((sample, index) => (
+                      <button
+                        key={sample.src}
+                        type="button"
+                        onClick={(event) => {
+                          previewTriggerRef.current = event.currentTarget
+                          setActivePreview(sample)
+                        }}
+                        className={`group relative overflow-hidden rounded-2xl border-2 border-white bg-gray-100 text-left shadow-[0_18px_38px_rgba(15,23,42,0.2)] transition duration-300 hover:z-10 hover:-translate-y-2 hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-white/10 dark:bg-white/[0.04] ${index === 1 ? 'h-36 sm:h-64' : 'h-28 sm:h-52'}`}
+                        aria-label={`放大查看${sample.label}示例`}
+                      >
+                        <img
+                          src={sample.src}
+                          alt={sample.alt}
+                          width="1122"
+                          height="1402"
+                          className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                        />
+                        <span className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/55 px-2.5 py-2 text-[11px] font-semibold text-white backdrop-blur-md sm:px-3 sm:text-xs">
+                          {sample.label}
+                          <MagnifyingGlassPlus className="h-4 w-4" weight="bold" />
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </div>
-
-                <div className="grid h-36 grid-cols-3 items-center gap-2 sm:h-64 sm:gap-3">
-                  {samples.map((sample, index) => (
-                    <button
-                      key={sample.src}
-                      type="button"
-                      onClick={(event) => {
-                        previewTriggerRef.current = event.currentTarget
-                        setActivePreview(sample)
-                      }}
-                      className={`group relative overflow-hidden rounded-2xl border-2 border-white bg-gray-100 text-left shadow-[0_18px_38px_rgba(15,23,42,0.2)] transition duration-300 hover:z-10 hover:-translate-y-2 hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-white/10 dark:bg-white/[0.04] ${index === 1 ? 'h-36 sm:h-64' : 'h-28 sm:h-52'}`}
-                      aria-label={`放大查看${sample.label}示例`}
-                    >
-                      <img
-                        src={sample.src}
-                        alt={sample.alt}
-                        width="1122"
-                        height="1402"
-                        className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
-                      />
-                      <span className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/55 px-2.5 py-2 text-[11px] font-semibold text-white backdrop-blur-md sm:px-3 sm:text-xs">
-                        {sample.label}
-                        <MagnifyingGlassPlus className="h-4 w-4" weight="bold" />
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+              ) : null}
             </div>
           </section>
 
-          <div className="px-2 pb-2 pt-4 sm:px-8 sm:pt-5">
-            <ol className="mx-auto flex max-w-2xl items-center justify-center gap-1 text-[11px] font-medium text-white/55 sm:gap-3 sm:text-sm" aria-label="新手引导进度">
+          <div className={`px-2 pb-2 pt-3 ${modalStep ? 'sm:px-8 sm:pt-5' : 'sm:flex sm:items-center sm:justify-between sm:gap-4 sm:px-5'}`}>
+            <ol className={`flex max-w-2xl items-center gap-1 text-[11px] font-medium text-white/55 sm:gap-3 sm:text-sm ${modalStep ? 'mx-auto justify-center' : 'justify-center sm:justify-start'}`} aria-label="新手引导进度">
               {steps.map((item, index) => (
                 <li key={item.badge} className="flex min-w-0 items-center gap-1.5 sm:gap-2">
                   <button
@@ -411,18 +438,18 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
                       {index < step ? <Check className="h-3.5 w-3.5" weight="bold" /> : index + 1}
                     </span>
                   </button>
-                  <span className={`hidden whitespace-nowrap sm:inline ${index === step ? 'font-semibold text-white' : ''}`}>{item.badge}</span>
+                  <span className={`${modalStep ? 'hidden sm:inline' : 'hidden'} whitespace-nowrap ${index === step ? 'font-semibold text-white' : ''}`}>{item.badge}</span>
                   {index < steps.length - 1 ? <span className="mx-0.5 h-px w-3 bg-white/25 sm:mx-1 sm:w-8" /> : null}
                 </li>
               ))}
             </ol>
 
-            <div className="mt-4 flex items-center justify-center gap-3">
+            <div className={`flex items-center justify-center gap-3 ${modalStep ? 'mt-4' : 'mt-3 sm:mt-0 sm:justify-end'}`}>
               {step > 0 ? (
                 <button
                   type="button"
                   onClick={() => setStep((value) => value - 1)}
-                  className="min-h-11 rounded-xl border border-white/35 bg-white/10 px-5 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  className="min-h-11 whitespace-nowrap rounded-xl border border-white/35 bg-white/10 px-5 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
                 >
                   上一步
                 </button>
@@ -437,40 +464,44 @@ export default function OnboardingGuide({ ready }: OnboardingGuideProps) {
                   close()
                   window.setTimeout(() => getVisibleTarget('prompt')?.focus(), 0)
                 }}
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#3157ea] px-6 text-sm font-semibold text-white shadow-[0_12px_34px_rgba(49,87,234,0.42)] transition hover:-translate-y-0.5 hover:bg-[#2447d9] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                className="inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-[#3157ea] px-6 text-sm font-semibold text-white shadow-[0_12px_34px_rgba(49,87,234,0.42)] transition hover:-translate-y-0.5 hover:bg-[#2447d9] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
               >
                 {step === steps.length - 1 ? '开始创作' : step === 0 ? '已有 Key，继续了解' : '下一步'}
                 <ArrowRight className="h-4 w-4" weight="bold" />
               </button>
             </div>
 
-            <a
-              href={PURCHASE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={saveSeen}
-              className="group mx-auto mt-4 flex min-h-[4.5rem] w-full max-w-xl items-center justify-between gap-4 rounded-2xl border border-white/25 bg-[#3157ea] px-4 py-3 text-white shadow-[0_20px_55px_rgba(49,87,234,0.52)] transition hover:-translate-y-1 hover:bg-[#2447d9] hover:shadow-[0_24px_65px_rgba(49,87,234,0.62)] focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:px-5"
-            >
-              <span className="min-w-0 text-left">
-                <span className="block text-base font-bold sm:text-lg">还没有 API Key？立即购买</span>
-                <span className="mt-0.5 block text-xs text-blue-100 sm:text-sm">前往 llm-token.cn · 低成本生图 · 无需额外付费</span>
-              </span>
-              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white text-[#3157ea] shadow-lg transition group-hover:scale-105 group-hover:rotate-3">
-                <ArrowSquareOut className="h-5 w-5" weight="bold" />
-              </span>
-            </a>
+            {modalStep ? (
+              <>
+                <a
+                  href={PURCHASE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={saveSeen}
+                  className="group mx-auto mt-4 flex min-h-[4.5rem] w-full max-w-xl items-center justify-between gap-4 rounded-2xl border border-white/25 bg-[#3157ea] px-4 py-3 text-white shadow-[0_20px_55px_rgba(49,87,234,0.52)] transition hover:-translate-y-1 hover:bg-[#2447d9] hover:shadow-[0_24px_65px_rgba(49,87,234,0.62)] focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:px-5"
+                >
+                  <span className="min-w-0 text-left">
+                    <span className="block text-base font-bold sm:text-lg">还没有 API Key？立即购买</span>
+                    <span className="mt-0.5 block text-xs text-blue-100 sm:text-sm">前往 llm-token.cn · 低成本生图 · 无需额外付费</span>
+                  </span>
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white text-[#3157ea] shadow-lg transition group-hover:scale-105 group-hover:rotate-3">
+                    <ArrowSquareOut className="h-5 w-5" weight="bold" />
+                  </span>
+                </a>
 
-            <button
-              type="button"
-              onClick={() => {
-                saveSeen()
-                setOpen(false)
-                setShowSettings(true, 'api')
-              }}
-              className="mx-auto mt-3 block min-h-10 rounded-lg px-4 text-xs font-medium text-white/70 transition hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
-            >
-              已有 Key？打开 API 设置
-            </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    saveSeen()
+                    setOpen(false)
+                    setShowSettings(true, 'api')
+                  }}
+                  className="mx-auto mt-3 block min-h-10 rounded-lg px-4 text-xs font-medium text-white/70 transition hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                >
+                  已有 Key？打开 API 设置
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
       </div>
