@@ -21,7 +21,7 @@ import { readRuntimeEnv } from './runtimeEnv'
 import { isImportableConfigUrl } from './customProviderConfigUrl'
 
 export const DEFAULT_API_BASE_URL = 'https://api.llm-token.cn/v1'
-const LEGACY_DEFAULT_API_BASE_URL = 'https://gpt-agent.cc/v1'
+const LEGACY_DEFAULT_API_BASE_URLS = new Set(['https://gpt-agent.cc/v1', '/api-proxy'])
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
 const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE) === 'true'
 const DOCKER_DEPLOYMENT = readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT) === 'true'
@@ -145,7 +145,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function migrateLegacyApiBaseUrl(value: unknown) {
   if (typeof value !== 'string') return value
-  if (value.trim().replace(/\/+$/, '').toLowerCase() !== LEGACY_DEFAULT_API_BASE_URL) return value
+  if (!LEGACY_DEFAULT_API_BASE_URLS.has(value.trim().replace(/\/+$/, '').toLowerCase())) return value
   return DEFAULT_API_BASE_URL
 }
 

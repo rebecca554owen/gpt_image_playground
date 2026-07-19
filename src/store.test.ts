@@ -806,6 +806,11 @@ describe('agent conversation persistence', () => {
             id: 'custom-profile',
             baseUrl: 'https://custom.example.com/v1',
           },
+          {
+            ...DEFAULT_SETTINGS.profiles[0],
+            id: 'legacy-proxy-profile',
+            baseUrl: '/api-proxy',
+          },
         ],
       },
     })
@@ -822,6 +827,7 @@ describe('agent conversation persistence', () => {
             },
           },
           { baseUrl: 'https://custom.example.com/v1' },
+          { baseUrl: 'https://api.llm-token.cn/v1' },
         ],
       },
     })
