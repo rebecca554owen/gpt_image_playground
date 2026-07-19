@@ -42,6 +42,16 @@ find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DO
 find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DOCKER_LEGACY_API_URL_USED_PLACEHOLDER__|$DOCKER_LEGACY_API_URL_USED|g" {} +
 find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_SHOW_DEFAULT_CONFIG_ONLY_PLACEHOLDER__|$DEFAULT_CONFIG_ONLY|g" {} +
 
+# JS 文件名由构建内容生成，但运行时替换不会改变文件名。追加配置指纹，避免浏览器长期缓存旧配置。
+RUNTIME_CONFIG_VERSION=$(printf '%s\n' \
+    "$DEFAULT_API_URL" \
+    "$API_PROXY_AVAILABLE" \
+    "$API_PROXY_LOCKED" \
+    "$DOCKER_LEGACY_API_URL_USED" \
+    "$DEFAULT_CONFIG_ONLY" | cksum | awk '{print $1}')
+sed -i 's|\.js?runtime=[^"]*"|.js"|g' /usr/share/nginx/html/index.html
+sed -i "s|\.js\"|.js?runtime=$RUNTIME_CONFIG_VERSION\"|g" /usr/share/nginx/html/index.html
+
 # 检查是否启用了 API 代理
 if [ "$ENABLE_API_PROXY" != "true" ]; then
     # 删除代理配置块
