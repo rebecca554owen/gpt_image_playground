@@ -21,6 +21,13 @@ import { readRuntimeEnv } from './runtimeEnv'
 import { isImportableConfigUrl } from './customProviderConfigUrl'
 
 export const DEFAULT_API_BASE_URL = 'https://api.llm-token.cn/v1'
+export const RECOMMENDED_API_SITES = [
+  { id: 'mainland', label: '中国大陆', hostname: 'api.llm-token.cn', url: DEFAULT_API_BASE_URL, badge: '推荐' },
+  { id: 'hong-kong', label: '香港地区', hostname: 'hk.gpt-agent.cc', url: 'https://hk.gpt-agent.cc/v1', badge: '' },
+  { id: 'europe', label: '欧洲地区', hostname: 'eu.gpt-agent.cc', url: 'https://eu.gpt-agent.cc/v1', badge: '' },
+  { id: 'americas', label: '美洲默认', hostname: 'gpt-agent.cc', url: 'https://gpt-agent.cc/v1', badge: '' },
+  { id: 'backup', label: '备用站点', hostname: 'img.llm-token.cn', url: 'https://img.llm-token.cn/v1', badge: '备用' },
+] as const
 const LEGACY_DEFAULT_API_BASE_URLS = new Set(['https://gpt-agent.cc/v1', '/api-proxy'])
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
 const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE) === 'true'

@@ -1,8 +1,16 @@
+const FIRST_PARTY_API_HOSTNAMES = new Set([
+  'api.llm-token.cn',
+  'hk.gpt-agent.cc',
+  'eu.gpt-agent.cc',
+  'gpt-agent.cc',
+  'img.llm-token.cn',
+])
+
 export function getPurchaseUrl(baseUrl: string): string {
   try {
     const url = new URL(baseUrl.trim())
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return baseUrl
-    if (url.hostname === 'api.llm-token.cn') return 'https://llm-token.cn'
+    if (FIRST_PARTY_API_HOSTNAMES.has(url.hostname)) return 'https://llm-token.cn'
     url.pathname = url.pathname.replace(/\/v1\/?$/, '') || '/'
     url.search = ''
     url.hash = ''

@@ -48,10 +48,17 @@ describe('default API URL env', () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'false')
     vi.stubEnv('VITE_DOCKER_DEPLOYMENT', 'false')
 
-    const { DEFAULT_SETTINGS, createDefaultOpenAIProfile } = await import('./apiProfiles')
+    const { DEFAULT_SETTINGS, RECOMMENDED_API_SITES, createDefaultOpenAIProfile } = await import('./apiProfiles')
 
     expect(createDefaultOpenAIProfile().baseUrl).toBe('https://api.llm-token.cn/v1')
     expect(DEFAULT_SETTINGS.baseUrl).toBe('https://api.llm-token.cn/v1')
+    expect(RECOMMENDED_API_SITES.map((site) => [site.label, site.url])).toEqual([
+      ['中国大陆', 'https://api.llm-token.cn/v1'],
+      ['香港地区', 'https://hk.gpt-agent.cc/v1'],
+      ['欧洲地区', 'https://eu.gpt-agent.cc/v1'],
+      ['美洲默认', 'https://gpt-agent.cc/v1'],
+      ['备用站点', 'https://img.llm-token.cn/v1'],
+    ])
   })
 
   it('applies shared URL params from VITE_DEFAULT_API_URL to the default profile', async () => {

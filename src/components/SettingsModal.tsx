@@ -12,6 +12,7 @@ import {
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_RESPONSES_MODEL,
   DEFAULT_SETTINGS,
+  RECOMMENDED_API_SITES,
   findEquivalentApiProfile,
   getApiProviderLabel,
   getActiveApiProfile,
@@ -1487,7 +1488,7 @@ export default function SettingsModal() {
 
               {/* 3. API URL */}
               {activeProviderUsesApiUrl && (
-                <label className="block">
+                <div className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">API URL</span>
                   </div>
@@ -1500,6 +1501,41 @@ export default function SettingsModal() {
                     placeholder={activeProfile.provider === 'fal' ? DEFAULT_FAL_BASE_URL : DEFAULT_SETTINGS.baseUrl}
                     className={`w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50 ${apiProxyEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                   />
+                  {activeProfile.provider === 'openai' && (
+                    <div className="mt-3 rounded-xl border border-gray-200/70 bg-gray-50/70 p-3 dark:border-white/[0.08] dark:bg-white/[0.025]">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">推荐站点</span>
+                        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-300">文本 / 图片通用</span>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-5 text-gray-500 dark:text-gray-400">选择离用户最近的区域，API Key 和账户额度在所有线路通用。</p>
+                      <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {RECOMMENDED_API_SITES.map((site) => {
+                          const selected = activeProfile.baseUrl.trim().replace(/\/+$/, '').toLowerCase() === site.url.toLowerCase()
+                          return (
+                            <button
+                              key={site.id}
+                              type="button"
+                              onClick={() => updateActiveProfile({ baseUrl: site.url }, true)}
+                              disabled={apiProxyEnabled}
+                              aria-pressed={selected}
+                              title={site.url}
+                              className={`group min-h-14 rounded-lg border px-2.5 py-2 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-blue-500/60 ${selected
+                                ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm shadow-blue-500/10 dark:border-blue-400 dark:bg-blue-500/15 dark:text-blue-200'
+                                : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50/50 dark:border-white/[0.08] dark:bg-white/[0.035] dark:text-gray-200 dark:hover:border-blue-500/40 dark:hover:bg-blue-500/[0.08]'} ${apiProxyEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                            >
+                              <span className="flex items-center gap-1.5 text-xs font-semibold">
+                                {site.label}
+                                {site.badge && (
+                                  <span className={`rounded px-1 py-0.5 text-[9px] font-medium ${selected ? 'bg-blue-600 text-white dark:bg-blue-400 dark:text-gray-950' : 'bg-gray-100 text-gray-500 dark:bg-white/[0.08] dark:text-gray-400'}`}>{site.badge}</span>
+                                )}
+                              </span>
+                              <span className={`mt-1 block truncate text-[10px] ${selected ? 'text-blue-500 dark:text-blue-300' : 'text-gray-400 group-hover:text-blue-400 dark:text-gray-500'}`}>{site.hostname}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                   <div data-selectable-text className="mt-1.5 min-h-[22px] flex items-center text-xs text-gray-500 dark:text-gray-500">
                     {apiProxyEnabled ? (
                       <span className="text-yellow-600 dark:text-yellow-500">已开启代理，实际请求目标由部署端决定，此处设置被忽略。</span>
@@ -1509,7 +1545,7 @@ export default function SettingsModal() {
                       <span>支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiUrl=</code></span>
                     )}
                   </div>
-                </label>
+                </div>
               )}
 
               {/* 4. API 代理（紧跟 URL） */}
