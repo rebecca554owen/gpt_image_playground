@@ -117,7 +117,7 @@
 
 将本仓库导入 Vercel 后，Vercel 会自动执行构建并部署静态文件。
 
-**配置默认 API URL**：在 Vercel 项目的 **Settings → Environment Variables** 中添加 `VITE_DEFAULT_API_URL`（如 `https://gpt-agent.cc/v1`），然后重新部署即可生效。
+**配置默认 API URL**：在 Vercel 项目的 **Settings → Environment Variables** 中添加 `VITE_DEFAULT_API_URL`（如 `https://api.llm-token.cn/v1`），然后重新部署即可生效。
 
 **携带默认配置参数**：`VITE_DEFAULT_API_URL` 支持通过 URL 查询参数预设默认配置，可用参数包括 `apiUrl`、`apiKey`、`apiMode`、`model`、`profileName`、`codexCli`、`streamImages`、`streamPartialImages`。
 
@@ -151,13 +151,13 @@ npm run deploy:cf
 **配置默认 API URL**：Cloudflare Workers 的环境变量不会自动改写已经构建好的静态文件。若需预设默认 API 地址，请在构建前设置 `VITE_DEFAULT_API_URL` 后再部署。
 
 ```bash
-VITE_DEFAULT_API_URL=https://gpt-agent.cc/v1 npm run deploy:cf
+VITE_DEFAULT_API_URL=https://api.llm-token.cn/v1 npm run deploy:cf
 ```
 
 PowerShell 示例：
 
 ```powershell
-$env:VITE_DEFAULT_API_URL="https://gpt-agent.cc/v1"; npm run deploy:cf
+$env:VITE_DEFAULT_API_URL="https://api.llm-token.cn/v1"; npm run deploy:cf
 ```
 
 **携带默认配置参数**：`VITE_DEFAULT_API_URL` 支持通过 URL 查询参数预设默认配置，可用参数包括 `apiUrl`、`apiKey`、`apiMode`、`model`、`profileName`、`codexCli`、`streamImages`、`streamPartialImages`。
@@ -203,10 +203,10 @@ Docker 部署支持在运行时注入默认配置。
 
 ```bash
 docker run -d -p 8080:80 \
-  -e DEFAULT_API_URL=https://gpt-agent.cc/v1 \
+  -e DEFAULT_API_URL=https://api.llm-token.cn/v1 \
   -e ENABLE_API_PROXY=true \
   -e LOCK_API_PROXY=true \
-  -e API_PROXY_URL=https://gpt-agent.cc/v1 \
+  -e API_PROXY_URL=https://api.llm-token.cn/v1 \
   your-registry/gpt_image_playground:latest
 ```
 
@@ -245,7 +245,7 @@ services:
   gpt-image-playground:
     image: your-registry/gpt_image_playground:latest
     environment:
-      - DEFAULT_API_URL=https://gpt-agent.cc/v1
+      - DEFAULT_API_URL=https://api.llm-token.cn/v1
     ports:
       - "8080:80"
     restart: unless-stopped
@@ -262,7 +262,7 @@ services:
 
 **1. 环境准备与启动**
 
-你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://gpt-agent.cc/v1`）。然后安装依赖并启动：
+你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://api.llm-token.cn/v1`）。然后安装依赖并启动：
 
 **携带默认配置参数**：`VITE_DEFAULT_API_URL` 支持通过 URL 查询参数预设默认配置，可用参数包括 `apiUrl`、`apiKey`、`apiMode`、`model`、`profileName`、`codexCli`、`streamImages`、`streamPartialImages`。
 

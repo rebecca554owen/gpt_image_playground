@@ -20,14 +20,15 @@ import { normalizeStreamPartialImages, parseDefaultApiUrl } from './defaultApiUr
 import { readRuntimeEnv } from './runtimeEnv'
 import { isImportableConfigUrl } from './customProviderConfigUrl'
 
-const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1'
+export const DEFAULT_API_BASE_URL = 'https://api.llm-token.cn/v1'
+const LEGACY_DEFAULT_API_BASE_URL = 'https://gpt-agent.cc/v1'
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
 const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE) === 'true'
 const DOCKER_DEPLOYMENT = readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT) === 'true'
 const SHOW_DEFAULT_CONFIG_ONLY = readRuntimeEnv(import.meta.env.VITE_SHOW_DEFAULT_CONFIG_ONLY) === 'true'
 const DEFAULT_API_URL_PATCH = isImportableConfigUrl(RAW_DEFAULT_API_URL)
   ? null
-  : parseDefaultApiUrl(RAW_DEFAULT_API_URL || (DOCKER_DEPLOYMENT && DEFAULT_OPENAI_API_PROXY ? '' : OPENAI_DEFAULT_BASE_URL))
+  : parseDefaultApiUrl(RAW_DEFAULT_API_URL || (DOCKER_DEPLOYMENT && DEFAULT_OPENAI_API_PROXY ? '' : DEFAULT_API_BASE_URL))
 const DEFAULT_BASE_URL = DEFAULT_API_URL_PATCH?.baseUrl ?? ''
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const FOUR_K_IMAGES_MODEL = 'gpt-image-2-4k'
@@ -140,6 +141,41 @@ function normalizeStringArray(value: unknown, fallback: string[]): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function migrateLegacyApiBaseUrl(value: unknown) {
+  if (typeof value !== 'string') return value
+  if (value.trim().replace(/\/+$/, '').toLowerCase() !== LEGACY_DEFAULT_API_BASE_URL) return value
+  return DEFAULT_API_BASE_URL
+}
+
+function migrateLegacyApiProfile(input: unknown) {
+  if (!isRecord(input)) return input
+
+  const providerDrafts = isRecord(input.providerDrafts)
+    ? Object.fromEntries(Object.entries(input.providerDrafts).map(([provider, draft]) => [
+        provider,
+        isRecord(draft) && typeof draft.baseUrl === 'string'
+          ? { ...draft, baseUrl: migrateLegacyApiBaseUrl(draft.baseUrl) }
+          : draft,
+      ]))
+    : input.providerDrafts
+
+  return {
+    ...input,
+    ...(typeof input.baseUrl === 'string' ? { baseUrl: migrateLegacyApiBaseUrl(input.baseUrl) } : {}),
+    ...(providerDrafts !== undefined ? { providerDrafts } : {}),
+  }
+}
+
+export function migrateLegacyDefaultApiUrlSettings(input: unknown) {
+  if (!isRecord(input)) return input
+
+  return {
+    ...input,
+    ...(typeof input.baseUrl === 'string' ? { baseUrl: migrateLegacyApiBaseUrl(input.baseUrl) } : {}),
+    ...(Array.isArray(input.profiles) ? { profiles: input.profiles.map(migrateLegacyApiProfile) } : {}),
+  }
 }
 
 function normalizeRequestMethod(value: unknown, fallback: CustomProviderRequestMethod = 'POST'): CustomProviderRequestMethod {

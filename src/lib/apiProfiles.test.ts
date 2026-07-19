@@ -42,6 +42,18 @@ describe('validateApiProfile', () => {
 })
 
 describe('default API URL env', () => {
+  it('uses the mainland accelerated API URL when no deployment override is configured', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_DEFAULT_API_URL', '')
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'false')
+    vi.stubEnv('VITE_DOCKER_DEPLOYMENT', 'false')
+
+    const { DEFAULT_SETTINGS, createDefaultOpenAIProfile } = await import('./apiProfiles')
+
+    expect(createDefaultOpenAIProfile().baseUrl).toBe('https://api.llm-token.cn/v1')
+    expect(DEFAULT_SETTINGS.baseUrl).toBe('https://api.llm-token.cn/v1')
+  })
+
   it('applies shared URL params from VITE_DEFAULT_API_URL to the default profile', async () => {
     vi.resetModules()
     vi.stubEnv('VITE_DEFAULT_API_URL', 'https://app.example.com/?apiUrl=https%3A%2F%2Fapi.example.com&apiMode=images&model=test-image-model&profileName=URL%20Profile&codexCli=true&streamImages=true&streamPartialImages=3')

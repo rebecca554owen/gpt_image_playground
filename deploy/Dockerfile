@@ -21,8 +21,8 @@ FROM nginx:alpine
 
 ENV HOST=0.0.0.0
 ENV PORT=80
-ENV DEFAULT_API_URL=
-ENV API_PROXY_URL=
+ENV DEFAULT_API_URL=https://api.llm-token.cn/v1
+ENV API_PROXY_URL=https://api.llm-token.cn/v1
 ENV ENABLE_API_PROXY=false
 ENV LOCK_API_PROXY=false
 ENV SHOW_DEFAULT_CONFIG_ONLY=false

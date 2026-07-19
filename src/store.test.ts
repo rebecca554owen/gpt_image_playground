@@ -788,6 +788,45 @@ describe('agent conversation persistence', () => {
     expect(serializedMigrated).toContain('image_generation_call')
   })
 
+  it('moves only the legacy default API URL to the mainland accelerated endpoint', () => {
+    const migrated = migratePersistedState({
+      settings: {
+        baseUrl: 'https://gpt-agent.cc/v1/',
+        profiles: [
+          {
+            ...DEFAULT_SETTINGS.profiles[0],
+            baseUrl: 'https://gpt-agent.cc/v1',
+            providerDrafts: {
+              openai: { baseUrl: 'https://gpt-agent.cc/v1/' },
+              fal: { baseUrl: 'https://custom.example.com/v1' },
+            },
+          },
+          {
+            ...DEFAULT_SETTINGS.profiles[0],
+            id: 'custom-profile',
+            baseUrl: 'https://custom.example.com/v1',
+          },
+        ],
+      },
+    })
+
+    expect(migrated).toMatchObject({
+      settings: {
+        baseUrl: 'https://api.llm-token.cn/v1',
+        profiles: [
+          {
+            baseUrl: 'https://api.llm-token.cn/v1',
+            providerDrafts: {
+              openai: { baseUrl: 'https://api.llm-token.cn/v1' },
+              fal: { baseUrl: 'https://custom.example.com/v1' },
+            },
+          },
+          { baseUrl: 'https://custom.example.com/v1' },
+        ],
+      },
+    })
+  })
+
   it('collects agent task ids from round metadata and task backrefs', () => {
     const conversation = agentConversation({
       id: 'conversation-a',
