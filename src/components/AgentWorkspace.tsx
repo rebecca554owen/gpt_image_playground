@@ -791,7 +791,7 @@ export default function AgentWorkspace() {
       if ((selection.anchorNode && target.contains(selection.anchorNode)) || (selection.focusNode && target.contains(selection.focusNode))) return
     }
 
-    void handleCopyMessage(normalizeImageApiErrorDisplayText(content), '完整报错已复制', '复制完整报错失败')
+    void handleCopyMessage(content, '完整报错已复制', '复制完整报错失败')
   }
 
   return (

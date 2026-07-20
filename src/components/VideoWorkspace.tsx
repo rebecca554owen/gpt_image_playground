@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '../store'
+import { normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
 import { createVideoJob, getVideoJob, type VideoJobStatus } from '../lib/videoJobs'
 import { LinkIcon, RefreshIcon, TrashIcon } from './icons'
 
@@ -278,7 +279,7 @@ export default function VideoWorkspace() {
                       <span>{task.duration}s</span>
                       <span>{task.resolution}</span>
                     </div>
-                    {task.error && <p className="text-xs text-red-500">{task.error}</p>}
+                    {task.error && <p className="whitespace-pre-line text-xs leading-5 text-red-500">{normalizeImageApiErrorDisplayText(task.error)}</p>}
                     <div className="flex items-center justify-end gap-1">
                       {task.videoUrl && (
                         <a

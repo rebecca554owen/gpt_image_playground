@@ -144,14 +144,76 @@ export function normalizeImageApiErrorMessage(message: string): string {
   return message
 }
 
+function getFriendlyImageApiErrorDisplayMessage(message: string): string {
+  const normalizedMessage = normalizeImageApiErrorMessage(message)
+  if (normalizedMessage !== message) return normalizedMessage
+
+  const cleanMessage = message.replace(/\s*\(request[_ -]?id\s*[:：][^)]+\)/gi, '').trim()
+  if (/signal is aborted|aborterror|operation was aborted|this operation was aborted/i.test(cleanMessage)) {
+    return '本次生成已被中止。\n提示：请先检查任务记录和账户额度，确认没有生成成功后再重试，避免重复扣费。'
+  }
+  if (/\b401\b|unauthori[sz]ed|invalid (?:api )?(?:key|token)|incorrect api key|无效的令牌|令牌无效|api key.{0,8}(?:无效|错误|失效)/i.test(cleanMessage)) {
+    return 'API Key 无效或已失效。\n提示：请重新填写购买时获得的 API Key；文本和图片共用同一 Key。'
+  }
+  if (/insufficient[_\s-]?quota|quota (?:exceeded|insufficient)|余额不足|额度不足|insufficient (?:balance|credit)|not enough (?:balance|credit)/i.test(cleanMessage)) {
+    return '账户额度不足。\n提示：请先充值或更换有余额的 API Key，然后再重新生成。'
+  }
+  if (/\b429\b|rate limit|too many requests|请求过于频繁/i.test(cleanMessage)) {
+    return '请求过于频繁。\n提示：请等待一会儿再重试，避免连续点击生成。'
+  }
+  if (/\b403\b|forbidden|permission denied|没有权限|无权限/i.test(cleanMessage)) {
+    return '当前 API Key 没有访问该模型或图片功能的权限。\n提示：请更换可用模型；如果仍然失败，请复制完整报错并提交工单。'
+  }
+  if (/\b405\b|method not allowed|接口未开放|接口尚未开放/i.test(cleanMessage)) {
+    return '当前功能的服务器接口尚未开放。\n提示：请稍后再试，或复制完整报错并提交工单。'
+  }
+  if (/\b404\b|model.{0,30}(?:not found|unsupported|unavailable)|unsupported model|模型不存在|不支持.{0,8}模型/i.test(cleanMessage)) {
+    return '当前接口或模型不可用。\n提示：请检查 API 地址和模型选择，或切换到推荐模型后重试。'
+  }
+  if (/\b413\b|payload too large|request entity too large|content too large|图片过大|文件过大/i.test(cleanMessage)) {
+    return '上传的图片过大。\n提示：请压缩图片或降低分辨率后再试。'
+  }
+  if (/\b451\b|content policy|moderation|safety (?:check|policy)|内容审核|安全审核/i.test(cleanMessage)) {
+    return '提示词或参考图触发了安全审核。\n提示：请调整敏感内容、人物描述或参考图后再试。'
+  }
+  if (/\b408\b|\b504\b|gateway time-?out|request time-?out|timed out|timeout|deadline exceeded|请求超时/i.test(cleanMessage)) {
+    return '生成等待时间过长，连接已超时。\n提示：请先检查任务记录和账户额度；确认没有生成成功后再重试，避免重复扣费。'
+  }
+  if (/\b499\b|client closed request|client disconnected|请求已取消|连接已取消/i.test(cleanMessage)) {
+    return '生成请求已被中断。\n提示：请保持页面打开和网络稳定；确认任务未成功后再重试。'
+  }
+  if (/\b502\b|\b503\b|bad gateway|service unavailable|upstream (?:error|failed|unavailable)|上游服务异常|服务不可用/i.test(cleanMessage)) {
+    return '图片服务暂时不稳定。\n提示：请稍后重试；如果多次失败，请复制完整报错并提交工单。'
+  }
+  if (/ssl|tls|certificate|证书错误|安全连接失败/i.test(cleanMessage)) {
+    return '安全连接建立失败。\n提示：请检查本机时间和网络环境，或切换网络后重试。'
+  }
+  if (/failed to fetch|load failed|networkerror|network error|econnreset|socket hang up|unexpected eof|connection reset|网络连接失败|网络异常/i.test(cleanMessage)) {
+    return '网络连接已中断。\n提示：请检查网络后重试；中国大陆用户建议使用大陆 API 地址。'
+  }
+  if (/\b500\b|internal server error|服务器内部错误/i.test(cleanMessage)) {
+    return '图片服务暂时异常。\n提示：请稍后重试；如果多次失败，请复制完整报错并提交工单。'
+  }
+  if (/\b400\b|\b409\b|\b422\b|invalid request|unsupported parameter|invalid parameter|参数错误|参数不支持/i.test(cleanMessage)) {
+    return '当前请求参数不被模型支持。\n提示：请恢复默认参数，或减少参考图后再试。'
+  }
+  if (/invalid json|unexpected token|无法解析|无法识别.{0,8}(?:响应|数据)/i.test(cleanMessage)) {
+    return '服务返回了无法识别的数据。\n提示：请复制完整报错并提交工单，方便客服排查。'
+  }
+  if (!/[\u3400-\u9fff]/.test(cleanMessage)) {
+    return '图片生成失败，服务返回了未识别的错误。\n提示：请复制完整报错并提交工单，方便客服排查。'
+  }
+  return cleanMessage || '图片生成失败，请稍后重试。'
+}
+
 export function normalizeImageApiErrorDisplayText(message: string): string {
   const requestFailurePrefix = '请求失败：'
   const prefix = message.startsWith(requestFailurePrefix) ? requestFailurePrefix : ''
   const body = prefix ? message.slice(requestFailurePrefix.length) : message
   const [mainMessage, ...hints] = body.split('\n提示：')
-  const normalizedMainMessage = normalizeImageApiErrorMessage(mainMessage)
+  const normalizedMainMessage = getFriendlyImageApiErrorDisplayMessage(mainMessage)
 
-  if (hints.length === 0) return `${prefix}${normalizedMainMessage}`
+  if (hints.length === 0 || normalizedMainMessage.includes('\n提示：')) return `${prefix}${normalizedMainMessage}`
   return `${prefix}${normalizedMainMessage}\n提示：${hints.join('\n提示：')}`
 }
 

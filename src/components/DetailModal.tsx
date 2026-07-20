@@ -272,6 +272,7 @@ export default function DetailModal() {
   const currentTransparentOutputFailed = Boolean(currentOutputImageId && task.transparentOutput && task.transparentOriginalImages?.[currentOutputImageIndex] === '')
   const outputCompressionText = task.params.output_compression == null ? '未设置' : String(task.params.output_compression)
   const displayError = normalizeImageApiErrorDisplayText(task.error || '生成失败')
+  const [displayErrorMain, ...displayErrorHints] = displayError.split('\n提示：')
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
@@ -317,7 +318,7 @@ export default function DetailModal() {
 
   const handleCopyError = async () => {
     try {
-      await copyTextToClipboard(displayError)
+      await copyTextToClipboard(task.error || '生成失败')
       showToast('完整报错已复制', 'success')
     } catch (err) {
       showToast(getClipboardFailureMessage('复制报错失败', err), 'error')
@@ -716,17 +717,15 @@ export default function DetailModal() {
               <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <p
-                className="overflow-hidden whitespace-pre-line text-sm leading-6 text-red-500 break-words"
-                style={{
-                  display: '-webkit-box',
-                  WebkitBoxOrient: 'vertical',
-                  WebkitLineClamp: 10,
-                }}
-              >
-                {displayError}
+              <p className="text-sm font-medium leading-6 text-red-500 break-words">
+                {displayErrorMain}
               </p>
-              <div className="mt-3 flex items-center justify-center gap-2">
+              {displayErrorHints.length > 0 && (
+                <p className="mt-1.5 text-xs leading-5 text-gray-500 dark:text-gray-400 break-words">
+                  <span className="font-medium">处理建议：</span>{displayErrorHints.join('\n提示：')}
+                </p>
+              )}
+              <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                 <div className="relative group">
                   <button
                     type="button"
@@ -735,10 +734,11 @@ export default function DetailModal() {
                       copyErrorTooltip.handlers.onClick()
                       handleCopyError()
                     }}
-                    className="inline-flex items-center justify-center rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10"
                     aria-label="复制完整报错"
                   >
                     <CopyIcon className="h-4 w-4" />
+                    复制完整报错
                   </button>
                   <ViewportTooltip visible={copyErrorTooltip.visible} className="whitespace-nowrap">
                     复制完整报错
@@ -753,10 +753,11 @@ export default function DetailModal() {
                         dismissAllTooltips()
                         setShowRawResponseModal(true)
                       }}
-                      className="inline-flex items-center justify-center rounded-full border border-purple-200/80 bg-purple-50 px-3 py-1.5 text-purple-600 transition hover:bg-purple-100 dark:border-purple-500/20 dark:bg-purple-500/10 dark:text-purple-400 dark:hover:bg-purple-500/20"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-full border border-purple-200/80 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-600 transition hover:bg-purple-100 dark:border-purple-500/20 dark:bg-purple-500/10 dark:text-purple-400 dark:hover:bg-purple-500/20"
                       aria-label="查看原始响应"
                     >
                       <CodeIcon className="h-4 w-4" />
+                      查看原始响应
                     </button>
                     <ViewportTooltip visible={viewRawResponseTooltip.visible} className="whitespace-nowrap">
                       查看原始响应
