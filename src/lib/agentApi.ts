@@ -990,13 +990,17 @@ export function parseBatchImageCallArguments(args: string): Array<{ id: string; 
     const parsed = JSON.parse(args) as { images?: unknown }
     if (!parsed || !Array.isArray(parsed.images)) return null
     const items: Array<{ id: string; prompt: string }> = []
+    const ids = new Set<string>()
     for (const raw of parsed.images) {
       if (!raw || typeof raw !== 'object') continue
       const item = raw as Record<string, unknown>
-      const id = typeof item.id === 'string' ? item.id.trim() : ''
       const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : ''
       if (!prompt) continue
-      items.push({ id: id || `image_${items.length + 1}`, prompt })
+      const baseId = (typeof item.id === 'string' ? item.id.trim() : '') || `image_${items.length + 1}`
+      let id = baseId
+      for (let suffix = 2; ids.has(id); suffix++) id = `${baseId}_${suffix}`
+      ids.add(id)
+      items.push({ id, prompt })
     }
     return items.length > 0 ? items : null
   } catch {

@@ -17,7 +17,7 @@
     "@phosphor-icons/react": "^2.1.10",
     "@streamdown/math": "^1.0.2",
     "core-js": "^3.49.0",
-    "fflate": "^0.8.2",
+    "fflate": "^0.8.3",
     "katex": "^0.16.47",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

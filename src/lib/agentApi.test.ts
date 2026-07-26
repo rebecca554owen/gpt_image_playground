@@ -1,7 +1,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
-import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle } from './agentApi'
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments } from './agentApi'
+
+describe('parseBatchImageCallArguments', () => {
+  it('normalizes duplicate batch item ids', () => {
+    const args = JSON.stringify({ images: [
+      { id: 'same', prompt: 'one' },
+      { id: ' same ', prompt: 'two' },
+      { id: 'same_2', prompt: 'three' },
+      { id: 'same', prompt: 'four' },
+    ] })
+
+    expect(parseBatchImageCallArguments(args)).toEqual([
+      { id: 'same', prompt: 'one' },
+      { id: 'same_2', prompt: 'two' },
+      { id: 'same_2_2', prompt: 'three' },
+      { id: 'same_3', prompt: 'four' },
+    ])
+  })
+})
 
 describe('callAgentResponsesApi', () => {
   afterEach(() => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { AgentConversation, AgentMessage, AgentRound, ResponsesOutputItem, TaskRecord } from '../types'
-import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentRoundTaskIds, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
+import { editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentRoundTaskIds, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
@@ -279,6 +279,8 @@ export default function AgentWorkspace() {
   const setActiveConversationId = useStore((s) => s.setActiveAgentConversationId)
   const renameConversation = useStore((s) => s.renameAgentConversation)
   const deleteConversation = useStore((s) => s.deleteAgentConversation)
+  const deleteAgentRound = useStore((s) => s.deleteAgentRound)
+  const deleteAgentAssistantMessage = useStore((s) => s.deleteAgentAssistantMessage)
   const sidebarCollapsed = useStore((s) => s.agentSidebarCollapsed)
   const setSidebarCollapsed = useStore((s) => s.setAgentSidebarCollapsed)
   const agentMobileHeaderVisible = useStore((s) => s.agentMobileHeaderVisible)
@@ -656,73 +658,38 @@ export default function AgentWorkspace() {
 
   const handleDeleteMessage = (message: AgentMessage, round: AgentRound) => {
     const isUserMessage = message.role === 'user'
-    const assistantTaskIds = isUserMessage
-      ? []
-      : Array.from(new Set([
-          ...(message.outputTaskIds ?? []),
-          ...getAgentRoundTaskIds(round, tasks),
-          ...tasks
-            .filter((task) => task.agentMessageId === message.id || task.agentRoundId === round.id)
-            .map((task) => task.id),
-        ]))
+    const conversationId = conversation?.id
     setConfirmDialog({
       title: isUserMessage ? '删除轮次' : '删除消息',
       message: isUserMessage
         ? '确定要删除这轮任务吗？这会删除这条消息和它的输出，后续消息会被保留。'
         : '确定要删除这条消息吗？这会同时删除这条回复生成的图片。',
+      awaitAction: true,
       action: async () => {
-        if (isUserMessage) {
-          const roundTaskIds = getAgentRoundTaskIds(round, tasks)
-          if (roundTaskIds.length > 0) await removeMultipleTasks(roundTaskIds)
-
-          useStore.setState((state) => {
-            const targetConversationId = conversation?.id
-            let oldActivePath: AgentRound[] = []
-            let newActivePath: AgentRound[] = []
-            const agentConversations = state.agentConversations.map((item) => {
-              if (item.id !== targetConversationId) return item
-              oldActivePath = getActiveAgentRounds(item)
-              const nextConversation = deleteAgentRoundFromConversation(item, round.id)
-              newActivePath = getActiveAgentRounds(nextConversation)
-              return nextConversation
-            })
-            const draft = targetConversationId ? state.agentInputDrafts[targetConversationId] : null
-            const remappedDraft = draft
-              ? { ...draft, prompt: remapAgentRoundMentionsForPathChange(draft.prompt, oldActivePath, newActivePath) }
-              : null
-            const agentInputDrafts = targetConversationId && remappedDraft
-              ? { ...state.agentInputDrafts, [targetConversationId]: remappedDraft }
-              : state.agentInputDrafts
-            const shouldRemapVisibleInput = targetConversationId && state.activeAgentConversationId === targetConversationId && state.appMode === 'agent'
-            return {
-              agentConversations,
-              agentInputDrafts,
-              ...(shouldRemapVisibleInput ? { prompt: remapAgentRoundMentionsForPathChange(state.prompt, oldActivePath, newActivePath) } : {}),
-              agentEditingRoundId: state.agentEditingRoundId === round.id ? null : state.agentEditingRoundId,
-            }
-          })
-          return
+        if (!conversationId) return true
+        try {
+          const result = isUserMessage
+            ? await deleteAgentRound(conversationId, round.id)
+            : await deleteAgentAssistantMessage(conversationId, message.id)
+          if (result === 'running') {
+            showToast('该轮次仍在生成，请先停止生成后再删除', 'info')
+            return true
+          }
+          if (result === 'not-found') {
+            showToast(isUserMessage ? '该轮次已不存在' : '该消息已不存在', 'info')
+            return true
+          }
+          if (result === 'deleted-with-warning') {
+            showToast('已删除，但本地存储或图片清理未完成', 'error')
+            return true
+          }
+          showToast(isUserMessage ? '已删除轮次' : '已删除消息', 'success')
+          return true
+        } catch (err) {
+          console.error(err)
+          showToast(isUserMessage ? '删除轮次失败' : '删除消息失败', 'error')
+          return false
         }
-
-        if (assistantTaskIds.length > 0) await removeMultipleTasks(assistantTaskIds)
-
-        useStore.setState((state) => ({
-          agentConversations: state.agentConversations.map((item) =>
-            item.id === conversation?.id
-              ? {
-                  ...item,
-                  updatedAt: Date.now(),
-                  rounds: item.rounds.map((candidate) =>
-                    candidate.id === round.id && candidate.assistantMessageId === message.id
-                      ? { ...candidate, assistantMessageId: undefined }
-                      : candidate,
-                  ),
-                  messages: item.messages.filter((candidate) => candidate.id !== message.id),
-                }
-              : item,
-          ),
-          agentEditingRoundId: state.agentEditingRoundId,
-        }))
       },
     })
   }

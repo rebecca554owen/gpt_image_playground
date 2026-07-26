@@ -3,6 +3,7 @@ import { strToU8, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, FOUR_K_IMAGES_MODEL, normalizeSettings } from './lib/apiProfiles'
 import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
+import { hasActiveDataOperations } from './lib/dataOperations'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
 vi.mock('./lib/db', () => {
   const tasks = new Map<string, TaskRecord>()
@@ -20,6 +21,11 @@ vi.mock('./lib/db', () => {
     },
     deleteTask: async (id: string) => {
       tasks.delete(id)
+    },
+    commitTaskDeletion: async (deletedTaskIds: string[], updatedTasks: TaskRecord[], updatedConversations: AgentConversation[]) => {
+      for (const id of deletedTaskIds) tasks.delete(id)
+      for (const task of updatedTasks) tasks.set(task.id, task)
+      for (const conversation of updatedConversations) agentConversations.set(conversation.id, conversation)
     },
     clearTasks: async () => {
       tasks.clear()
@@ -40,6 +46,7 @@ vi.mock('./lib/db', () => {
       for (const conversation of conversations) agentConversations.set(conversation.id, conversation)
     },
     getImage: async (id: string) => images.get(id),
+    getStoredImageThumbnail: async (id: string) => thumbnails.get(id),
     getImageThumbnail: async (id: string) => thumbnails.get(id),
     getStoredFreshImageThumbnail: async (id: string) => thumbnails.get(id),
     getAllImageIds: async () => [...images.keys()],
@@ -177,11 +184,33 @@ function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
   }
 }
 
-function importFile(data: ExportData): File {
-  const zipped = zipSync({ 'manifest.json': strToU8(JSON.stringify(data)) })
+function importFile(data: ExportData, files: Record<string, Uint8Array> = {}): File {
+  const zipped = zipSync({ ...files, 'manifest.json': strToU8(JSON.stringify(data)) })
   const buffer = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength)
-  return { arrayBuffer: async () => buffer } as File
+  return { name: 'backup.zip', size: zipped.byteLength, arrayBuffer: async () => buffer.slice(0) } as File
 }
+
+describe('data operation locking', () => {
+  it('detects running and recoverable work before import or export', () => {
+    expect(hasActiveDataOperations([task({ status: 'running' })], [])).toBe(true)
+    expect(hasActiveDataOperations([task({ falRecoverable: true })], [])).toBe(true)
+    expect(hasActiveDataOperations([], [agentConversation({
+      rounds: [{
+        id: 'round-a',
+        index: 1,
+        userMessageId: 'message-a',
+        prompt: 'prompt',
+        inputImageIds: [],
+        outputTaskIds: [],
+        status: 'running',
+        error: null,
+        createdAt: 1,
+        finishedAt: null,
+      }],
+    })])).toBe(true)
+    expect(hasActiveDataOperations([task()], [])).toBe(false)
+  })
+})
 
 describe('network disconnect retry protection', () => {
   beforeEach(() => {
@@ -1130,6 +1159,45 @@ describe('agent round deletion', () => {
     expect(remapAgentRoundMentionsForPathChange('继续参考 @第1轮图1、@第2轮图1、@第3轮图1', oldPath, newPath))
       .toBe('继续参考 @第1轮图1、@已删除轮次图1、@第2轮图1')
   })
+
+  it('deletes a round and its tasks through the coordinated store action', async () => {
+    const outputTask = task({
+      id: 'task-round',
+      sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
+      agentRoundId: 'round-a',
+    })
+    useStore.setState({
+      tasks: [outputTask],
+      agentConversations: [agentConversation({
+        id: 'conversation-a',
+        activeRoundId: 'round-a',
+        rounds: [{
+          id: 'round-a',
+          index: 1,
+          parentRoundId: null,
+          userMessageId: 'user-a',
+          assistantMessageId: 'assistant-a',
+          prompt: '生成图片',
+          inputImageIds: [],
+          outputTaskIds: [outputTask.id],
+          status: 'done',
+          error: null,
+          createdAt: 1,
+          finishedAt: 2,
+        }],
+        messages: [
+          { id: 'user-a', role: 'user', content: '生成图片', roundId: 'round-a', createdAt: 1 },
+          { id: 'assistant-a', role: 'assistant', content: '完成', roundId: 'round-a', outputTaskIds: [outputTask.id], createdAt: 2 },
+        ],
+      })],
+    })
+
+    expect(await useStore.getState().deleteAgentRound('conversation-a', 'round-a')).toBe('deleted')
+    expect(useStore.getState().tasks).toEqual([])
+    expect(useStore.getState().agentConversations[0].rounds).toEqual([])
+    expect(useStore.getState().agentConversations[0].messages).toEqual([])
+  })
 })
 
 describe('data import', () => {
@@ -1303,6 +1371,164 @@ describe('data import', () => {
     expect('agentConversations' in persisted).toBe(false)
     expect(serializedPersisted).not.toContain('image_generation_call')
     expect(serializedPersisted).not.toContain('imported-legacy-base64')
+  })
+
+  it('imports a complete multipart backup selected in any order', async () => {
+    await clearTasks()
+    await clearImages()
+    const importedTask = task({ id: 'multipart-task', outputImages: ['multipart-image-a', 'multipart-image-b'] })
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [importedTask],
+      favoriteCollections: [],
+      agentConversations: [],
+      imageFiles: { 'multipart-image-a': { path: 'images/image-a.png' } },
+    }, { 'images/image-a.png': new Uint8Array([1, 2]) })
+    const part2 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 2, total: 2 },
+      tasks: [task({ id: 'multipart-task-2' })],
+      imageFiles: { 'multipart-image-b': { path: 'images/image-b.png' } },
+    }, { 'images/image-b.png': new Uint8Array([3, 4]) })
+
+    const imported = await importData([part2, part1], { importConfig: false, importTasks: true })
+
+    expect(imported).toBe(true)
+    expect((await getAllTasks()).some((item) => item.id === importedTask.id)).toBe(true)
+    expect((await getAllTasks()).some((item) => item.id === 'multipart-task-2')).toBe(true)
+    expect(await getImage('multipart-image-a')).toMatchObject({ dataUrl: 'data:image/png;base64,AQI=' })
+    expect(await getImage('multipart-image-b')).toMatchObject({ dataUrl: 'data:image/png;base64,AwQ=' })
+  })
+
+  it('imports multiple regular backups together', async () => {
+    await clearTasks()
+    await clearImages()
+    const sharedCollection = { id: 'regular-collection-shared', name: '共享收藏夹', createdAt: 1, updatedAt: 1 }
+    const collectionA = { id: 'regular-collection-a', name: '普通备份 A', createdAt: 1, updatedAt: 1 }
+    const collectionB = { id: 'regular-collection-b', name: '普通备份 B', createdAt: 2, updatedAt: 2 }
+    const sharedTask = task({ id: 'regular-task-shared', outputImages: ['regular-image-shared'] })
+    const backupA = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      tasks: [sharedTask, task({ id: 'regular-task-a', outputImages: ['regular-image-a'], favoriteCollectionIds: [collectionA.id], isFavorite: true })],
+      favoriteCollections: [sharedCollection, collectionA],
+      defaultFavoriteCollectionId: collectionA.id,
+      imageFiles: {
+        'regular-image-shared': { path: 'images/shared.png' },
+        'regular-image-a': { path: 'images/image-a.png' },
+      },
+    }, {
+      'images/shared.png': new Uint8Array([5, 6]),
+      'images/image-a.png': new Uint8Array([1, 2]),
+    })
+    const backupB = importFile({
+      version: 3,
+      exportedAt: new Date(1).toISOString(),
+      tasks: [sharedTask, task({ id: 'regular-task-b', outputImages: ['regular-image-b'], favoriteCollectionIds: [collectionB.id], isFavorite: true })],
+      favoriteCollections: [sharedCollection, collectionB],
+      defaultFavoriteCollectionId: collectionB.id,
+      imageFiles: {
+        'regular-image-shared': { path: 'images/shared.png' },
+        'regular-image-b': { path: 'images/image-b.png' },
+      },
+    }, {
+      'images/shared.png': new Uint8Array([5, 6]),
+      'images/image-b.png': new Uint8Array([3, 4]),
+    })
+
+    const imported = await importData([backupA, backupB], { importConfig: false, importTasks: true })
+
+    const state = useStore.getState()
+    const taskIds = (await getAllTasks()).map((item) => item.id)
+    const collectionIds = state.favoriteCollections.map((collection) => collection.id)
+    expect(imported).toBe(true)
+    expect(taskIds).toEqual(expect.arrayContaining(['regular-task-shared', 'regular-task-a', 'regular-task-b']))
+    expect(taskIds.filter((id) => id === sharedTask.id)).toHaveLength(1)
+    expect(await getImage('regular-image-shared')).toMatchObject({ dataUrl: 'data:image/png;base64,BQY=' })
+    expect(await getImage('regular-image-a')).toMatchObject({ dataUrl: 'data:image/png;base64,AQI=' })
+    expect(await getImage('regular-image-b')).toMatchObject({ dataUrl: 'data:image/png;base64,AwQ=' })
+    expect(collectionIds).toEqual(expect.arrayContaining([sharedCollection.id, collectionA.id, collectionB.id]))
+    expect(collectionIds.filter((id) => id === sharedCollection.id)).toHaveLength(1)
+  })
+
+  it('deduplicates shared config when merging multiple regular backups', async () => {
+    const sharedProfile = createDefaultOpenAIProfile({ id: 'regular-profile-shared', name: '共享配置', apiKey: 'shared-key' })
+    const profileA = createDefaultOpenAIProfile({ id: 'regular-profile-a', name: '普通配置 A', apiKey: 'key-a' })
+    const profileB = createDefaultOpenAIProfile({ id: 'regular-profile-b', name: '普通配置 B', apiKey: 'key-b' })
+    const backupA = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [sharedProfile, profileA], activeProfileId: profileA.id }),
+    })
+    const backupB = importFile({
+      version: 3,
+      exportedAt: new Date(1).toISOString(),
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [sharedProfile, profileB], activeProfileId: profileB.id }),
+    })
+
+    const imported = await importData([backupA, backupB], { importConfig: true, importTasks: false })
+
+    const apiKeys = useStore.getState().settings.profiles.map((profile) => profile.apiKey)
+    expect(imported).toBe(true)
+    expect(apiKeys).toEqual(expect.arrayContaining(['shared-key', 'key-a', 'key-b']))
+    expect(apiKeys.filter((apiKey) => apiKey === 'shared-key')).toHaveLength(1)
+  })
+
+  it('rejects an incomplete multipart backup before importing data', async () => {
+    await clearTasks()
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [task({ id: 'incomplete-task' })],
+      imageFiles: {},
+    })
+
+    const imported = await importData([part1], { importConfig: false, importTasks: true })
+
+    expect(imported).toBe(false)
+    expect((await getAllTasks()).some((item) => item.id === 'incomplete-task')).toBe(false)
+  })
+
+  it('validates image entries in every part before writing earlier parts', async () => {
+    await clearImages()
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 1, total: 2 },
+      tasks: [],
+      imageFiles: { 'preflight-image-a': { path: 'images/image-a.png' } },
+    }, { 'images/image-a.png': new Uint8Array([1, 2]) })
+    const part2 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'backup-a', index: 2, total: 2 },
+      imageFiles: { 'preflight-image-b': { path: 'images/missing.png' } },
+    })
+
+    const imported = await importData([part1, part2], { importConfig: false, importTasks: true })
+
+    expect(imported).toBe(false)
+    expect(await getImage('preflight-image-a')).toBeUndefined()
+  })
+
+  it('imports config with running tasks without requiring image parts', async () => {
+    useStore.setState({ tasks: [task({ status: 'running' })] })
+    const part1 = importFile({
+      version: 3,
+      exportedAt: new Date(0).toISOString(),
+      backupPart: { id: 'config-backup', index: 1, total: 3 },
+      settings: DEFAULT_SETTINGS,
+      tasks: [],
+      imageFiles: { 'unused-image': { path: 'images/missing.png' } },
+    })
+
+    const imported = await importData([part1], { importConfig: true, importTasks: false })
+
+    expect(imported).toBe(true)
   })
 
 })
@@ -1522,6 +1748,7 @@ describe('agent context for removed outputs', () => {
         id: 'task-live',
         outputImages: ['image-live'],
         sourceMode: 'agent',
+        agentConversationId: 'conversation-a',
         agentRoundId: 'round-a',
         agentToolCallId: 'live-call',
       })],
@@ -1781,6 +2008,7 @@ describe('agent context for removed outputs', () => {
       outputImages: ['image-deleted'],
       rawResponsePayload,
       sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
       agentToolCallId: 'deleted-call',
     })
@@ -1789,6 +2017,7 @@ describe('agent context for removed outputs', () => {
       outputImages: ['image-live'],
       rawResponsePayload,
       sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
       agentToolCallId: 'live-call',
     })
@@ -1826,6 +2055,7 @@ describe('agent context for removed outputs', () => {
       outputImages: ['batch-img-deleted'],
       rawResponsePayload: batchDeletedPayload,
       sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
       agentToolCallId: 'batch-deleted-call',
       agentBatchCallId: 'batch-fc-1',
@@ -1835,6 +2065,7 @@ describe('agent context for removed outputs', () => {
       outputImages: ['batch-img-live'],
       rawResponsePayload: batchLivePayload,
       sourceMode: 'agent',
+      agentConversationId: 'conversation-a',
       agentRoundId: 'round-a',
       agentToolCallId: 'batch-live-call',
       agentBatchCallId: 'batch-fc-1',
