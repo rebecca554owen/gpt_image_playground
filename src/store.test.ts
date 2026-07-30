@@ -862,6 +862,73 @@ describe('agent conversation persistence', () => {
     })
   })
 
+  it('raises legacy OpenAI timeouts to 600 seconds without changing other providers', () => {
+    expect(migratePersistedState({
+      settings: { timeout: 120 },
+    })).toMatchObject({
+      settings: { timeout: 600 },
+    })
+
+    const migrated = migratePersistedState({
+      settings: {
+        timeout: 120,
+        activeProfileId: 'openai-profile',
+        profiles: [
+          {
+            ...DEFAULT_SETTINGS.profiles[0],
+            id: 'openai-profile',
+            timeout: 120,
+          },
+          {
+            ...DEFAULT_SETTINGS.profiles[0],
+            id: 'fal-profile',
+            provider: 'fal',
+            timeout: 300,
+          },
+          {
+            ...DEFAULT_SETTINGS.profiles[0],
+            id: 'custom-profile',
+            provider: 'custom-provider',
+            timeout: 60,
+          },
+        ],
+      },
+    })
+
+    expect(migrated).toMatchObject({
+      settings: {
+        timeout: 600,
+        profiles: [
+          { id: 'openai-profile', timeout: 600 },
+          { id: 'fal-profile', timeout: 300 },
+          { id: 'custom-profile', timeout: 60 },
+        ],
+      },
+    })
+  })
+
+  it('keeps the top-level timeout when the active legacy profile is not OpenAI', () => {
+    const migrated = migratePersistedState({
+      settings: {
+        timeout: 60,
+        activeProfileId: 'custom-profile',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          id: 'custom-profile',
+          provider: 'custom-provider',
+          timeout: 60,
+        }],
+      },
+    })
+
+    expect(migrated).toMatchObject({
+      settings: {
+        timeout: 60,
+        profiles: [{ id: 'custom-profile', timeout: 60 }],
+      },
+    })
+  })
+
   it('collects agent task ids from round metadata and task backrefs', () => {
     const conversation = agentConversation({
       id: 'conversation-a',

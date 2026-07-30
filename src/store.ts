@@ -19,7 +19,7 @@ import type {
   StoredImageThumbnail,
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
-import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, migrateLegacyDefaultApiUrlSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
+import { DEFAULT_API_TIMEOUT, DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, migrateLegacyDefaultApiUrlSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
@@ -577,11 +577,39 @@ function stripPersistedAgentConversations(value: unknown): unknown {
   })
 }
 
+function migrateLegacyApiTimeoutSettings(value: unknown): unknown {
+  if (!isRecord(value)) return value
+
+  const profiles = Array.isArray(value.profiles)
+    ? value.profiles.map((profile) => {
+        if (!isRecord(profile)) return profile
+        const provider = typeof profile.provider === 'string' ? profile.provider : 'openai'
+        if (provider !== 'openai' || typeof profile.timeout !== 'number' || profile.timeout >= DEFAULT_API_TIMEOUT) return profile
+        return { ...profile, timeout: DEFAULT_API_TIMEOUT }
+      })
+    : undefined
+  const activeProfile = profiles?.find((profile) =>
+    isRecord(profile) && profile.id === value.activeProfileId,
+  ) ?? profiles?.[0]
+  const activeProvider = isRecord(activeProfile) && typeof activeProfile.provider === 'string'
+    ? activeProfile.provider
+    : 'openai'
+  const migrateLegacyTimeout = (!profiles?.length || activeProvider === 'openai') &&
+    typeof value.timeout === 'number' &&
+    value.timeout < DEFAULT_API_TIMEOUT
+
+  return {
+    ...value,
+    ...(migrateLegacyTimeout ? { timeout: DEFAULT_API_TIMEOUT } : {}),
+    ...(profiles ? { profiles } : {}),
+  }
+}
+
 export function migratePersistedState(persistedState: unknown): unknown {
   if (!isRecord(persistedState)) return persistedState
   return {
     ...persistedState,
-    settings: migrateLegacyDefaultApiUrlSettings(persistedState.settings),
+    settings: migrateLegacyApiTimeoutSettings(migrateLegacyDefaultApiUrlSettings(persistedState.settings)),
     agentConversations: stripPersistedAgentConversations(persistedState.agentConversations),
   }
 }
@@ -1678,7 +1706,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gpt-image-playground',
-      version: 3,
+      version: 4,
       migrate: (persistedState) => migratePersistedState(persistedState),
       partialize: getPersistedState,
       merge: mergePersistedState,
