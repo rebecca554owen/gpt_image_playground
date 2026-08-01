@@ -311,6 +311,61 @@ describe('callImageApi', () => {
     })
   })
 
+  it('resets the Images API timeout when the stream receives progress', async () => {
+    vi.useFakeTimers()
+    const encoder = new TextEncoder()
+    let requestSignal: AbortSignal | null = null
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      requestSignal = init?.signal as AbortSignal
+      const body = new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          const partialTimer = setTimeout(() => {
+            controller.enqueue(encoder.encode('data: {"type":"image_generation.partial_image","partial_image_index":0,"b64_json":"cGFydGlhbA=="}\n\n'))
+          }, 750)
+          const completedTimer = setTimeout(() => {
+            controller.enqueue(encoder.encode('data: {"type":"image_generation.completed","b64_json":"ZmluYWw="}\n\ndata: [DONE]\n\n'))
+            controller.close()
+          }, 1500)
+          requestSignal?.addEventListener('abort', () => {
+            clearTimeout(partialTimer)
+            clearTimeout(completedTimer)
+            controller.error(new DOMException('Aborted', 'AbortError'))
+          }, { once: true })
+        },
+      })
+      return new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const promise = callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        timeout: 1,
+        streamImages: true,
+        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
+          ...profile,
+          apiKey: 'test-key',
+          timeout: 1,
+          streamImages: true,
+        })),
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    await vi.advanceTimersByTimeAsync(750)
+    await vi.advanceTimersByTimeAsync(750)
+
+    await expect(promise).resolves.toMatchObject({
+      images: ['data:image/png;base64,ZmluYWw='],
+    })
+    expect((requestSignal as AbortSignal | null)?.aborted).toBe(false)
+  })
+
   it('suggests disabling streaming when a streaming request fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('invalid character \':\' looking for beginning of value', {
       status: 400,

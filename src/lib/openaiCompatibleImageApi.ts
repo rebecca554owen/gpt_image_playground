@@ -141,7 +141,11 @@ function parseServerSentEventBlock(block: string): string | null {
   return data
 }
 
-async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void | Promise<void>): Promise<void> {
+async function readJsonServerSentEvents(
+  response: Response,
+  onEvent: (event: Record<string, unknown>) => void | Promise<void>,
+  onActivity?: () => void,
+): Promise<void> {
   if (!response.body) throw new Error('接口未返回可读取的流式响应')
 
   const reader = response.body.getReader()
@@ -171,6 +175,7 @@ async function readJsonServerSentEvents(response: Response, onEvent: (event: Rec
   while (true) {
     const { value, done } = await reader.read()
     if (done) break
+    if (value.byteLength > 0) onActivity?.()
     buffer += decoder.decode(value, { stream: true })
 
     let separatorIndex = buffer.search(/\r?\n\r?\n/)
@@ -546,6 +551,7 @@ async function parseImagesApiStreamResponse(
   response: Response,
   mime: string,
   onPartialImage?: CallApiOptions['onPartialImage'],
+  onActivity?: () => void,
 ): Promise<CallApiResult> {
   const completedItems: ImageResponseItem[] = []
   let resultPayload: ImageApiResponse | null = null
@@ -572,7 +578,7 @@ async function parseImagesApiStreamResponse(
     if (type === 'image_generation.completed' || type === 'image_edit.completed') {
       completedItems.push(eventToImageResponseItem(event))
     }
-  })
+  }, onActivity)
 
   if (resultPayload) {
     return parseImagesApiResponse(resultPayload, mime)
@@ -617,6 +623,7 @@ async function parseResponsesApiStreamResponse(
   response: Response,
   mime: string,
   onPartialImage?: CallApiOptions['onPartialImage'],
+  onActivity?: () => void,
 ): Promise<CallApiResult> {
   let completedPayload: ResponsesApiResponse | null = null
   const outputItems: ResponsesOutputItem[] = []
@@ -649,7 +656,7 @@ async function parseResponsesApiStreamResponse(
     }
 
     completedPayload = payload
-  })
+  }, onActivity)
 
   const payload = completedPayload ?? (outputItems.length ? { output: outputItems } : null)
   const parseImageApiFallback = () => completedImageApiItems.length
@@ -758,6 +765,21 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   }
 }
 
+function createResettableRequestTimeout(controller: AbortController, timeoutSeconds: number) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const reset = () => {
+    if (timeoutId) clearTimeout(timeoutId)
+    timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000)
+  }
+  reset()
+  return {
+    reset,
+    clear: () => {
+      if (timeoutId) clearTimeout(timeoutId)
+    },
+  }
+}
+
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
   const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
@@ -771,7 +793,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
   const paths = createOpenAICompatiblePaths()
 
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeout = createResettableRequestTimeout(controller, profile.timeout)
 
   try {
     let response: Response
@@ -882,12 +904,15 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseImagesApiStreamResponse(response, mime, opts.onPartialImage)
+      return parseImagesApiStreamResponse(response, mime, opts.onPartialImage, () => {
+        timeout.reset()
+        opts.onStreamActivity?.()
+      })
     }
 
     return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
   } finally {
-    clearTimeout(timeoutId)
+    timeout.clear()
   }
 }
 
@@ -1253,7 +1278,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const requestHeaders = createRequestHeaders(profile)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeout = createResettableRequestTimeout(controller, profile.timeout)
 
   try {
     if (opts.maskDataUrl) {
@@ -1294,7 +1319,10 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage)
+      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage, () => {
+        timeout.reset()
+        opts.onStreamActivity?.()
+      })
     }
 
     const payload = await response.json() as ResponsesApiResponse
@@ -1318,6 +1346,6 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       revisedPrompts: imageResults.map((result) => result.revisedPrompt),
     }
   } finally {
-    clearTimeout(timeoutId)
+    timeout.clear()
   }
 }

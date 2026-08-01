@@ -20,6 +20,7 @@ export interface CallApiOptions {
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
+  onStreamActivity?: () => void
 }
 
 export interface CallApiResult {

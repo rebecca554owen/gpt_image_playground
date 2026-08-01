@@ -230,8 +230,9 @@ describe('network disconnect retry protection', () => {
       { provider: 'openai', apiMode: 'images', streamImages: false, streamPartialImages: 1 },
     )
 
-    expect(hint).toContain('请求等待约 120 秒后被断开')
-    expect(hint).toContain('Cloudflare')
+    expect(hint).toContain('请求等待约 120 秒后连接中断')
+    expect(hint).toContain('上游响应过慢')
+    expect(hint).toContain('可能产生扣费')
   })
 
   it('requires confirmation before retrying a potentially billable network disconnect task', async () => {
@@ -862,22 +863,22 @@ describe('agent conversation persistence', () => {
     })
   })
 
-  it('raises legacy OpenAI timeouts to 600 seconds without changing other providers', () => {
+  it('raises legacy OpenAI timeouts to 1200 seconds without changing other providers', () => {
     expect(migratePersistedState({
-      settings: { timeout: 120 },
-    })).toMatchObject({
       settings: { timeout: 600 },
+    })).toMatchObject({
+      settings: { timeout: 1200 },
     })
 
     const migrated = migratePersistedState({
       settings: {
-        timeout: 120,
+        timeout: 600,
         activeProfileId: 'openai-profile',
         profiles: [
           {
             ...DEFAULT_SETTINGS.profiles[0],
             id: 'openai-profile',
-            timeout: 120,
+            timeout: 600,
           },
           {
             ...DEFAULT_SETTINGS.profiles[0],
@@ -897,9 +898,9 @@ describe('agent conversation persistence', () => {
 
     expect(migrated).toMatchObject({
       settings: {
-        timeout: 600,
+        timeout: 1200,
         profiles: [
-          { id: 'openai-profile', timeout: 600 },
+          { id: 'openai-profile', timeout: 1200 },
           { id: 'fal-profile', timeout: 300 },
           { id: 'custom-profile', timeout: 60 },
         ],

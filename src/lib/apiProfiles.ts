@@ -43,7 +43,7 @@ export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
-export const DEFAULT_API_TIMEOUT = 600
+export const DEFAULT_API_TIMEOUT = 1200
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {

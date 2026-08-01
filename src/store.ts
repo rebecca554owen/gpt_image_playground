@@ -132,9 +132,9 @@ function isErrorToastTitle(title: string): boolean {
 
 export type SettingsTab = 'general' | 'agent' | 'api' | 'data' | 'about'
 
-const TIMEOUT_STREAMING_HINT = '也可尝试打开「流式传输」，并提高「请求中间步骤图像数」来维持连接。'
+const TIMEOUT_STREAMING_HINT = '也可尝试打开「流式传输」，让中间结果维持连接。'
 const TIMEOUT_PARTIAL_IMAGES_ZERO_HINT = '官方流式接口不发送心跳，当前「请求中间步骤图像数」为 0，连接可能因无数据传输而断开。建议提高到 2 或 3。'
-const TIMEOUT_PARTIAL_IMAGES_LOW_HINT = '也可尝试提高「请求中间步骤图像数」来维持连接，避免长时间无数据传输导致断开。'
+const TIMEOUT_PARTIAL_IMAGES_LOW_HINT = '也可尝试提高「请求中间步骤图像数」，避免长时间没有新进度。'
 
 type TimeoutStreamingHintProfile = Pick<ApiProfile, 'provider' | 'streamImages' | 'streamPartialImages'>
 
@@ -147,7 +147,10 @@ function getTimeoutStreamingHint(profile?: TimeoutStreamingHintProfile | null) {
 }
 
 function createOpenAITimeoutError(timeoutSeconds: number, profile?: TimeoutStreamingHintProfile | null) {
-  return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。${getTimeoutStreamingHint(profile)}`
+  if (profile?.streamImages === true) {
+    return `请求超时：连续 ${timeoutSeconds} 秒未收到新进度。上游任务可能仍在处理并产生扣费，请先等待并检查历史记录，再决定是否重试。${getTimeoutStreamingHint(profile)}`
+  }
+  return `请求超时：超过 ${timeoutSeconds} 秒仍未完成。上游任务可能仍在处理并产生扣费，请先等待并检查历史记录，再决定是否重试。${getTimeoutStreamingHint(profile)}`
 }
 
 export function getCachedImage(id: string): string | undefined {
@@ -1706,7 +1709,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gpt-image-playground',
-      version: 4,
+      version: 5,
       migrate: (persistedState) => migratePersistedState(persistedState),
       partialize: getPersistedState,
       merge: mergePersistedState,
@@ -1836,13 +1839,13 @@ function failOpenAITaskIfStillRunning(taskId: string, error: string, now = Date.
   return true
 }
 
-function scheduleOpenAIWatchdog(taskId: string, timeoutSeconds: number, profile?: TimeoutStreamingHintProfile | null) {
+function scheduleOpenAIWatchdog(taskId: string, timeoutSeconds: number, profile?: TimeoutStreamingHintProfile | null, resetFromNow = false) {
   clearOpenAIWatchdogTimer(taskId)
   const task = useStore.getState().tasks.find((item) => item.id === taskId)
   if (!task || !isRunningOpenAITask(task)) return
 
   const timeoutMs = Math.max(0, timeoutSeconds * 1000)
-  const remainingMs = Math.max(0, timeoutMs - (Date.now() - task.createdAt))
+  const remainingMs = resetFromNow ? timeoutMs : Math.max(0, timeoutMs - (Date.now() - task.createdAt))
   const timer = setTimeout(() => {
     openAIWatchdogTimers.delete(taskId)
     const failed = failOpenAITaskIfStillRunning(taskId, createOpenAITimeoutError(timeoutSeconds, profile))
@@ -2018,14 +2021,14 @@ export function getApiRequestNetworkErrorHint(
   }
 
   if (elapsedSeconds >= 55 && elapsedSeconds <= 75) {
-    return `提示：请求等待约 60 秒后被断开，这通常是 Nginx 等反向代理的默认超时，而非接口本身报错。可调大代理的超时时间（如 proxy_read_timeout），或降低图片尺寸/质量后重试。${getTimeoutStreamingHint(profile)}`
+    return `提示：请求等待约 60 秒后连接中断。可能是上游响应过慢、浏览器网络波动，或反向代理达到超时。浏览器没有拿到结果不代表上游已经取消，并可能产生扣费；请先等待 1-2 分钟或查看历史记录，再决定是否重试。${getTimeoutStreamingHint(profile)}`
   }
 
   if (elapsedSeconds >= 110 && elapsedSeconds <= 140) {
-    return `提示：请求等待约 120 秒后被断开，这通常是 Cloudflare 等 CDN/网关的超时限制，而非接口本身报错。如果使用 Cloudflare，可考虑升级套餐或使用不经过 CDN 的直连地址。${getTimeoutStreamingHint(profile)}`
+    return `提示：请求等待约 120 秒后连接中断。可能是上游响应过慢、浏览器网络波动，或 CDN/网关达到超时。浏览器没有拿到结果不代表上游已经取消，并可能产生扣费；请先等待 1-2 分钟或查看历史记录，再决定是否重试。${getTimeoutStreamingHint(profile)}`
   }
 
-  return `提示：请求等待较长时间后被断开，通常是反向代理或网关的超时限制，而非接口本身报错。可检查代理超时设置，或降低图片尺寸/质量后重试。${getTimeoutStreamingHint(profile)}`
+  return `提示：请求长时间等待后连接中断。可能是上游响应过慢、浏览器网络波动，或前端/网关达到超时。浏览器没有拿到结果不代表上游已经取消，并可能产生扣费；请先等待 1-2 分钟或查看历史记录，再决定是否重试。${getTimeoutStreamingHint(profile)}`
 }
 
 function getRawErrorPayload(err: unknown): Pick<Partial<TaskRecord>, 'rawImageUrls' | 'rawResponsePayload'> {
@@ -5036,11 +5039,11 @@ async function executeTask(taskId: string) {
     ? { taskId: task.customTaskId }
     : null
 
-  if (
+  const usesOpenAIWatchdog =
     taskProvider !== 'fal' &&
     !isAsyncCustomProviderTask(requestSettings, taskProvider, task.inputImageIds.length > 0) &&
     !usesConcurrentOpenAIImageRequests(requestProfile, task.params)
-  ) {
+  if (usesOpenAIWatchdog) {
     scheduleOpenAIWatchdog(taskId, requestProfile.timeout, requestProfile)
   }
 
@@ -5082,6 +5085,9 @@ async function executeTask(taskId: string) {
           customTaskId: request.taskId,
           customRecoverable: false,
         })
+      },
+      onStreamActivity: () => {
+        if (usesOpenAIWatchdog) scheduleOpenAIWatchdog(taskId, requestProfile.timeout, requestProfile, true)
       },
       onPartialImage: (partial) => {
         useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
