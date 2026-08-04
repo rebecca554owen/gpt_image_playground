@@ -235,6 +235,19 @@ describe('network disconnect retry protection', () => {
     expect(hint).toContain('可能产生扣费')
   })
 
+  it('labels a 15-55 second Load failed as an early browser or network disconnect', () => {
+    const hint = getApiRequestNetworkErrorHint(
+      new TypeError('Load failed'),
+      Date.now() - 22_000,
+      true,
+      { provider: 'openai', apiMode: 'images', streamImages: false, streamPartialImages: 1 },
+    )
+
+    expect(hint).toContain('浏览器或网络连接提前中断')
+    expect(hint).toContain('可能产生扣费')
+    expect(hint).not.toContain('请求长时间等待')
+  })
+
   it('requires confirmation before retrying a potentially billable network disconnect task', async () => {
     const failedTask = task({
       status: 'error',

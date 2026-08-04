@@ -2020,6 +2020,10 @@ export function getApiRequestNetworkErrorHint(
     return `提示：请求立即失败，可能原因：\n· API 服务器不可达或地址有误，请检查 API URL 是否正确、服务是否正常运行${unsupportedApiHint}\n· 接口不支持浏览器跨域请求，可使用 Docker 部署版或本地运行版并配置 API 代理解决`
   }
 
+  if (elapsedSeconds < 55) {
+    return `提示：浏览器或网络连接提前中断。可能是浏览器网络波动、设备切换网络、页面进入后台，或中间链路断开。浏览器没有拿到结果不代表上游已经取消，并可能产生扣费；请先等待 1-2 分钟或查看历史记录，再决定是否重试。${getTimeoutStreamingHint(profile)}`
+  }
+
   if (elapsedSeconds >= 55 && elapsedSeconds <= 75) {
     return `提示：请求等待约 60 秒后连接中断。可能是上游响应过慢、浏览器网络波动，或反向代理达到超时。浏览器没有拿到结果不代表上游已经取消，并可能产生扣费；请先等待 1-2 分钟或查看历史记录，再决定是否重试。${getTimeoutStreamingHint(profile)}`
   }
