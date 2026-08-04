@@ -8,7 +8,7 @@
 **基于 OpenAI gpt-image-2 API 的图片生成与编辑工具**
 
 提供简洁精美的 Web UI，支持 OpenAI / OpenAI 兼容接口、fal.ai 与可导入的自定义 HTTP 服务商。<br>
-支持文本生图、参考图与遮罩编辑，数据纯本地化存储，带来流畅的历史记录与参数管理体验。
+支持文本生图、参考图与遮罩编辑；历史记录默认保存在浏览器本地。启用服务端异步任务后，请求与结果会在任务服务中临时加密保存，以便断线后恢复。
 
 </div>
 
@@ -89,12 +89,12 @@
 - **智能尺寸控制**：提供 1K/2K/4K 快速预设，自定义宽高时会自动规整至模型安全范围（16 的倍数、总像素校验等）。
 - **实际参数对比**：自动提取 API 响应中真实生效的尺寸、质量、耗时以及**模型改写后的提示词**，与你的请求参数高亮对比。支持定制化的参数列表横向平滑滚动体验。
 
-### 📁 高效历史管理 (纯本地)
+### 📁 高效历史管理
 - **瀑布流与画廊**：历史任务自动保存，支持按状态过滤、全屏大图预览与快捷下载。
 - **多收藏夹管理**：支持创建多个命名收藏夹，同一任务可归入多个收藏夹。提供独立的收藏夹概览视图（展示封面缩略图与任务数量），点击进入具体收藏夹后仍可叠加搜索与状态筛选。收藏夹支持拖拽排序、重命名、设置默认收藏夹，以及按收藏夹为单位批量打包下载 ZIP。
 - **快捷批量操作**：桌面端支持鼠标拖拽框选、Ctrl/⌘ 连选，移动端支持顺滑侧滑多选；轻松实现批量收藏与清理。
 - **优化的图片查看与下载**：大图预览支持左右滑动切换、移动端长按弹出操作菜单，支持快捷下载与批量下载。
-- **极致性能与隐私**：所有记录与图片均存放在浏览器 IndexedDB 中（采用 SHA-256 去重压缩），不经过任何第三方服务器。支持一键打包导出 ZIP 备份。
+- **本地历史与可控暂存**：历史记录与已取回图片保存在浏览器 IndexedDB 中（采用 SHA-256 去重压缩）。未启用服务端异步任务时，站点服务器不保存任务数据；启用后，待处理请求、API Key 和结果会在自建任务服务中临时加密保存，并按 TTL 自动删除。支持一键打包导出 ZIP 备份。
 
 ### 🔌 多配置与服务商增强
 - **多配置管理**：支持创建并保存多个 API 配置（包含服务商、API Key、模型等），按需快速切换；支持一键复制当前配置到列表底部，并通过拖拽对配置列表与服务商列表进行自定义排序。
@@ -179,10 +179,14 @@ Docker 部署支持在运行时注入默认配置。
 - `API_PROXY_URL`：配置内置代理实际转发到的完整 API 基础地址（仅开启代理时有效）。代理不会自动补 `/v1`，OpenAI 兼容接口通常必须填写到版本前缀，如 `https://api.openai.com/v1`。
 - `ENABLE_API_PROXY`：设为 `true` 开启容器内置 Nginx 同源代理，用于解决浏览器跨域（CORS）限制。开启后，前端 **API 代理** 开关默认开启，浏览器会请求同源的 `/api-proxy/{接口相对路径}`，再由 Nginx 拼接到 `API_PROXY_URL` 后转发；用户仍可在设置中手动关闭。
 - `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。
+- `ENABLE_IMAGE_JOBS`：与 `ENABLE_API_PROXY=true` 一起使用时，将内置 OpenAI Images、Edits 和 Responses 请求交给独立任务服务。浏览器断网、切后台或刷新后会继续查询同一个服务端任务，不会自动重新提交。
+- `IMAGE_JOB_PROXY_URL`：任务服务的容器内地址，默认 `http://image-task-proxy:3001`。任务服务不应映射公网端口。
+- `IMAGE_JOB_ENCRYPTION_KEY_FILE`：任务服务读取 32 字节加密密钥的 secret 文件路径。生产环境应使用 Compose secret 挂载到 `/run/secrets/`，不要把密钥放进环境变量、Compose 文件或 Git。
+- `IMAGE_JOB_TRUST_PROXY_CIDRS`：允许提供真实客户端 IP 的可信代理网段。完整示例仅信任回环地址和 Docker 私网，并要求站点端口只绑定宿主机 `127.0.0.1`。
 - `SHOW_DEFAULT_CONFIG_ONLY`：设为 `true` 后，如果已配置默认 API URL 或默认代理，前端会禁用“当前配置”和“服务商类型”的下拉切换，只允许使用默认配置和默认服务商类型。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
 - `HOST` / `PORT`：指定容器内 Nginx 监听的地址和端口（默认 `0.0.0.0:80`）。
 
-> ⚠️ **安全警告**：开启 API 代理后，任何人都能将你的服务器作为代理来请求目标 API。建议仅在有访问控制（如 IP 白名单）或本地网络中开启。
+> ⚠️ **安全警告**：开启 API 代理后，访问站点的人可以通过服务器请求固定上游 API。生产部署应将容器端口绑定到 `127.0.0.1`，再通过受控的反向代理提供 HTTPS，避免直接暴露容器端口。
 
 > 💡 **导入自定义服务商配置**：`DEFAULT_API_URL` 除了填写普通 API 地址外，也支持直接填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL。设为配置 URL 时，页面启动后会自动导入其中的自定义服务商和 API 配置，设置页显示的是配置 JSON 中 profile 定义的 `baseUrl`（而非配置 URL 本身）。
 
@@ -202,23 +206,23 @@ Docker 部署支持在运行时注入默认配置。
 **1. Docker CLI 示例**
 
 ```bash
-docker run -d -p 8080:80 \
+docker run -d -p 127.0.0.1:8080:80 \
   -e DEFAULT_API_URL=https://api.llm-token.cn/v1 \
   -e ENABLE_API_PROXY=true \
   -e LOCK_API_PROXY=true \
   -e API_PROXY_URL=https://api.llm-token.cn/v1 \
-  your-registry/gpt_image_playground:latest
+  ghcr.io/rebecca554owen/gpt_image_playground:sha-0123456789ab
 ```
 
 **隐藏真实 API 地址示例（OpenAI 兼容接口）：**
 
 ```bash
-docker run -d -p 8080:80 \
+docker run -d -p 127.0.0.1:8080:80 \
   -e DEFAULT_API_URL= \
   -e API_PROXY_URL=https://real-api.example.com/v1 \
   -e ENABLE_API_PROXY=true \
   -e LOCK_API_PROXY=true \
-  your-registry/gpt_image_playground:latest
+  ghcr.io/rebecca554owen/gpt_image_playground:sha-0123456789ab
 ```
 
 > 上例中设置页的 API URL 为空，实际请求通过代理转发到 `API_PROXY_URL`。
@@ -226,12 +230,12 @@ docker run -d -p 8080:80 \
 **隐藏真实 API 地址示例（同步自定义服务商配置）：**
 
 ```bash
-docker run -d -p 8080:80 \
+docker run -d -p 127.0.0.1:8080:80 \
   -e DEFAULT_API_URL='https://example.com/?settings={"customProviders":[...],"profiles":[{"baseUrl":"","apiProxy":true,...}]}' \
   -e API_PROXY_URL=https://real-api.example.com/v1 \
   -e ENABLE_API_PROXY=true \
   -e LOCK_API_PROXY=true \
-  your-registry/gpt_image_playground:latest
+  ghcr.io/rebecca554owen/gpt_image_playground:sha-0123456789ab
 ```
 
 > 上例中 `DEFAULT_API_URL` 为同步自定义服务商配置分享 URL，profile 的 `baseUrl` 留空且 `apiProxy:true`；真实 API 地址仅在 `API_PROXY_URL` 中配置，前端不可见。异步任务自定义服务商暂不支持开启代理。
@@ -242,18 +246,60 @@ docker run -d -p 8080:80 \
 
 ```yaml
 services:
-  gpt-image-playground:
-    image: your-registry/gpt_image_playground:latest
+  image-task-proxy:
+    image: ghcr.io/rebecca554owen/gpt_image_playground-task-proxy:${IMAGE_TAG}
     environment:
-      - DEFAULT_API_URL=https://api.llm-token.cn/v1
-    ports:
-      - "8080:80"
+      IMAGE_JOB_UPSTREAM_URL: ${API_PROXY_URL}
+      IMAGE_JOB_ENCRYPTION_KEY_FILE: /run/secrets/image_job_encryption_key
+      IMAGE_JOB_TRUST_PROXY_CIDRS: 127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    secrets:
+      - image_job_encryption_key
+    volumes:
+      - image-job-data:/var/lib/image-jobs
     restart: unless-stopped
+
+  gpt-image-playground:
+    image: ghcr.io/rebecca554owen/gpt_image_playground:${IMAGE_TAG}
+    environment:
+      DEFAULT_API_URL: ${DEFAULT_API_URL:-}
+      API_PROXY_URL: ${API_PROXY_URL}
+      ENABLE_API_PROXY: 'true'
+      LOCK_API_PROXY: 'true'
+      ENABLE_IMAGE_JOBS: 'true'
+      IMAGE_JOB_PROXY_URL: http://image-task-proxy:3001
+    ports:
+      - '127.0.0.1:8080:80'
+    restart: unless-stopped
+
+volumes:
+  image-job-data:
+
+secrets:
+  image_job_encryption_key:
+    file: ${IMAGE_JOB_ENCRYPTION_KEY_FILE}
 ```
+
+完整示例见 `deploy/docker-compose.image-jobs.yml`。生产环境的 `IMAGE_TAG` 必须使用同一个提交对应的不可变 `sha-<commit前12位>` 标签，确保前端和任务服务版本一致，不要使用 `latest`。
+
+首次启用时，在仓库目录之外生成仅 root 可读的 32 字节密钥文件，并把文件路径作为 Compose 插值变量；密钥内容不会进入容器环境变量：
+
+```bash
+sudo install -d -m 700 /etc/gpt-image-playground
+umask 077
+openssl rand -hex 32 | sudo tee /etc/gpt-image-playground/image-job-encryption-key >/dev/null
+sudo chmod 600 /etc/gpt-image-playground/image-job-encryption-key
+export IMAGE_JOB_ENCRYPTION_KEY_FILE=/etc/gpt-image-playground/image-job-encryption-key
+export IMAGE_TAG=sha-0123456789ab
+docker compose -f deploy/docker-compose.image-jobs.yml up -d
+```
+
+任务请求、API Key 和结果使用该密钥加密写入独立 volume；SQLite 和日志不保存这些明文。任务服务只允许固定的 `images/generations`、`images/edits` 和 `responses` 路径。请长期保留同一密钥文件；丢失或擅自轮换密钥会导致尚未取回的任务数据无法解密。
+
+任务已经进入上游后，服务不会因浏览器断线自动重提。若任务服务异常重启且无法确认上游结果，任务会显示为“状态未知”，由用户核对账户记录后决定是否重新生成，避免潜在的重复扣费。发布时应保留任务 volume，并为任务服务提供不少于 21 分钟的优雅退出时间。
 
 **更新说明：**
 
-使用 `latest` 标签时，重新拉取镜像并重启即可更新（如 `docker compose pull && docker compose up -d`）。若需固定版本可使用官方提供的版本号标签（如 `0.2.x`）。
+把 `IMAGE_TAG` 更新为已经通过 CI 的新 `sha-<commit前12位>`，再执行 `docker compose pull && docker compose up -d`。回滚时恢复上一组已验证 SHA；不要在生产使用可变的 `latest` 标签。
 
 </details>
 

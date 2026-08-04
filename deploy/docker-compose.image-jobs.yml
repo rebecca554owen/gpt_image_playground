@@ -1,0 +1,48 @@
+services:
+  image-task-proxy:
+    image: ghcr.io/rebecca554owen/gpt_image_playground-task-proxy:${IMAGE_TAG:?IMAGE_TAG is required}
+    container_name: image-gpt-image-task-proxy
+    environment:
+      IMAGE_JOB_UPSTREAM_URL: ${API_PROXY_URL:?API_PROXY_URL is required}
+      IMAGE_JOB_ENCRYPTION_KEY_FILE: /run/secrets/image_job_encryption_key
+      IMAGE_JOB_TRUST_PROXY_CIDRS: 127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    secrets:
+      - image_job_encryption_key
+    volumes:
+      - image-job-data:/var/lib/image-jobs
+    expose:
+      - '3001'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    restart: unless-stopped
+    stop_grace_period: 21m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  image-gpt-image-playground:
+    image: ghcr.io/rebecca554owen/gpt_image_playground:${IMAGE_TAG:?IMAGE_TAG is required}
+    container_name: image-gpt-image-playground
+    depends_on:
+      image-task-proxy:
+        condition: service_healthy
+    environment:
+      DEFAULT_API_URL: ${DEFAULT_API_URL:-https://api.llm-token.cn/v1}
+      API_PROXY_URL: ${API_PROXY_URL:?API_PROXY_URL is required}
+      ENABLE_API_PROXY: 'true'
+      LOCK_API_PROXY: 'true'
+      ENABLE_IMAGE_JOBS: 'true'
+      IMAGE_JOB_PROXY_URL: http://image-task-proxy:3001
+    ports:
+      - '127.0.0.1:${IMAGE_SITE_PORT:-8080}:80'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    restart: unless-stopped
+
+volumes:
+  image-job-data:
+
+secrets:
+  image_job_encryption_key:
+    file: ${IMAGE_JOB_ENCRYPTION_KEY_FILE:?IMAGE_JOB_ENCRYPTION_KEY_FILE is required}

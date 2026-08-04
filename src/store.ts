@@ -26,6 +26,7 @@ import {
   CURRENT_THUMBNAIL_VERSION,
   getAllTasks,
   putTask as dbPutTask,
+  putTaskUnlessPersistedDone,
   deleteTask as dbDeleteTask,
   commitTaskDeletion,
   clearTasks as dbClearTasks,
@@ -44,6 +45,9 @@ import {
   clearImages,
   storeImage,
   storeImageWithSize,
+  getServerImageJobRefs,
+  commitServerImageJobRef,
+  deleteServerImageJobRefs,
 } from './lib/db'
 import { callImageApi } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
@@ -62,6 +66,7 @@ import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { hasActiveDataOperations } from './lib/dataOperations'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, createExportBlob, getExportImageEstimatedBytes, getExportZipPlan, MAX_EXPORT_ZIP_BYTES, readExportZip, readExportZipFileAsDataUrl, readExportZipManifest } from './lib/exportZip'
+import { isServerImageJobRecoverableError, isServerImageJobTerminalError, ServerImageJobRecoverableError, ServerImageJobTerminalError, type ServerImageJobRequestRef } from './lib/serverImageJobs'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -81,11 +86,14 @@ const MAX_THUMBNAIL_CACHE_ENTRIES = 80
 const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
+const SERVER_JOB_RECOVERY_POLL_MS = 10_000
 const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const AGENT_INPUT_DRAFT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
 const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const serverJobRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const serverJobPersistenceChains = new Map<string, Promise<unknown>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const agentRoundControllers = new Map<string, AbortController>()
 const agentRecoveryContinuations = new Set<string>()
@@ -1802,13 +1810,14 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
 export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
-    if (!isRunningOpenAITask(task) || task.customTaskId) return task
+    if (!isRunningOpenAITask(task) || task.customTaskId || task.serverJobIds?.length) return task
 
     const updated: TaskRecord = {
       ...task,
       status: 'error',
       error: OPENAI_INTERRUPTED_ERROR,
       falRecoverable: false,
+      serverJobRecoverable: false,
       finishedAt: now,
       elapsed: Math.max(0, now - task.createdAt),
     }
@@ -1833,6 +1842,7 @@ function failOpenAITaskIfStillRunning(taskId: string, error: string, now = Date.
     status: 'error',
     error,
     falRecoverable: false,
+    serverJobRecoverable: false,
     finishedAt: now,
     elapsed: Math.max(0, now - task.createdAt),
   })
@@ -1972,6 +1982,8 @@ function getTaskApiProfileName(task: TaskRecord) {
 }
 
 function isNetworkRecoverableError(err: unknown) {
+  if (isServerImageJobTerminalError(err)) return false
+  if (isServerImageJobRecoverableError(err)) return true
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
   const message = err instanceof Error ? err.message : String(err)
   return /abort|network|failed to fetch|fetch failed|load failed|timeout|连接|断开|中断/i.test(message)
@@ -2076,6 +2088,72 @@ function scheduleCustomRecovery(taskId: string, delayMs = CUSTOM_RECOVERY_POLL_M
     recoverCustomTask(taskId)
   }, delayMs)
   customRecoveryTimers.set(taskId, timer)
+}
+
+function clearServerJobRecoveryTimer(taskId: string) {
+  const timer = serverJobRecoveryTimers.get(taskId)
+  if (timer) clearTimeout(timer)
+  serverJobRecoveryTimers.delete(taskId)
+}
+
+function scheduleServerJobRecovery(taskId: string, delayMs = SERVER_JOB_RECOVERY_POLL_MS) {
+  if (serverJobRecoveryTimers.has(taskId)) return
+  if (!useStore.getState().tasks.some((task) => task.id === taskId)) return
+  const timer = setTimeout(() => {
+    serverJobRecoveryTimers.delete(taskId)
+    void recoverServerJobTask(taskId)
+  }, delayMs)
+  serverJobRecoveryTimers.set(taskId, timer)
+}
+
+async function persistServerImageJobRef(taskId: string, job: ServerImageJobRequestRef) {
+  const previous = serverJobPersistenceChains.get(taskId) ?? Promise.resolve()
+  const operation = previous.catch(() => undefined).then(async () => {
+    const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+    if (!latest) throw new Error('本地任务记录不存在，未提交服务端任务。')
+    const ref = {
+      id: `${taskId}:${job.requestIndex}`,
+      taskId,
+      jobId: job.jobId,
+      token: job.token,
+      requestIndex: job.requestIndex,
+      createdAt: Date.now(),
+    }
+    const serverJobIds = [...(latest.serverJobIds ?? [])]
+    serverJobIds[job.requestIndex] = job.jobId
+    await commitServerImageJobRef({ ...latest, serverJobIds, serverJobRecoverable: false }, ref)
+    updateTaskInStore(taskId, { serverJobIds, serverJobRecoverable: false })
+    return ref
+  })
+  serverJobPersistenceChains.set(taskId, operation)
+  try {
+    return await operation
+  } finally {
+    if (serverJobPersistenceChains.get(taskId) === operation) serverJobPersistenceChains.delete(taskId)
+  }
+}
+
+async function clearLocalServerImageJobRefs(taskId: string) {
+  await deleteServerImageJobRefs(taskId)
+}
+
+async function persistTaskPatchBeforeServerJobCleanup(taskId: string, patch: Partial<TaskRecord>) {
+  const latestBeforePersist = useStore.getState()
+  const latestTask = latestBeforePersist.tasks.find((item) => item.id === taskId)
+  if (!latestTask) return null
+  if (latestTask.status === 'done' && patch.status !== 'done') return { task: latestTask, committed: false }
+  const task = { ...latestTask, ...normalizeFavoritePatch(latestTask, patch, latestBeforePersist.defaultFavoriteCollectionId) }
+  const persisted = await putTaskUnlessPersistedDone(getPersistableTask(task))
+  const latestState = useStore.getState()
+  const latest = latestState.tasks.find((item) => item.id === taskId)
+  if (!persisted.committed) {
+    latestState.setTasks(latestState.tasks.map((item) => item.id === taskId ? persisted.task : item))
+    return persisted
+  }
+  if (latest?.status === 'done' && task.status !== 'done') return { task: latest, committed: false }
+  if (!latest) return { task, committed: false }
+  latestState.setTasks(latestState.tasks.map((item) => item.id === taskId ? task : item))
+  return persisted
 }
 
 function hasActualParams(params: Partial<TaskParams> | undefined): params is Partial<TaskParams> {
@@ -2299,6 +2377,12 @@ export async function initStore() {
       (task.status === 'running' || task.customRecoverable)
     ) {
       scheduleCustomRecovery(task.id, 0)
+    }
+    if (
+      task.serverJobIds?.length &&
+      (task.status === 'running' || task.serverJobRecoverable)
+    ) {
+      scheduleServerJobRecovery(task.id, 0)
     }
   }
 
@@ -2630,7 +2714,7 @@ function appendAgentStoppedMessage(content: string) {
 
 function markAgentRoundTasksStopped(conversationId: string, roundId: string, now = Date.now()) {
   const runningTasks = useStore.getState().tasks.filter((task) =>
-    (task.status === 'running' || task.falRecoverable || task.customRecoverable) &&
+    (task.status === 'running' || task.falRecoverable || task.customRecoverable || task.serverJobRecoverable) &&
     task.agentConversationId === conversationId &&
     task.agentRoundId === roundId,
   )
@@ -2638,11 +2722,13 @@ function markAgentRoundTasksStopped(conversationId: string, roundId: string, now
   for (const task of runningTasks) {
     clearFalRecoveryTimer(task.id)
     clearCustomRecoveryTimer(task.id)
+    clearServerJobRecoveryTimer(task.id)
     updateTaskInStore(task.id, {
       status: 'error',
       error: AGENT_STOPPED_MESSAGE,
       falRecoverable: false,
       customRecoverable: false,
+      serverJobRecoverable: false,
       finishedAt: now,
       elapsed: Math.max(0, now - task.createdAt),
     })
@@ -2667,12 +2753,14 @@ function markAgentRoundTasksFailed(
 
   for (const task of runningTasks) {
     useStore.getState().setTaskStreamPreview(task.id)
+    clearServerJobRecoveryTimer(task.id)
     updateTaskInStore(task.id, {
       status: 'error',
       error,
       ...(rawResponsePayload ? { rawResponsePayload } : {}),
       falRecoverable: false,
       customRecoverable: false,
+      serverJobRecoverable: false,
       finishedAt: now,
       elapsed: Math.max(0, now - task.createdAt),
     })
@@ -3579,7 +3667,7 @@ function createAgentRecoveredToolOutputs(round: AgentRound, tasks: TaskRecord[])
         }
       })()
       const task = tasks.find((task) => task.agentRoundId === round.id && task.agentToolCallId === item.call_id)
-      if (!task || task.status === 'running' || task.falRecoverable || task.customRecoverable) {
+      if (!task || task.status === 'running' || task.falRecoverable || task.customRecoverable || task.serverJobRecoverable) {
         hasPendingRecoverableCall = true
         continue
       }
@@ -3606,7 +3694,7 @@ function createAgentRecoveredToolOutputs(round: AgentRound, tasks: TaskRecord[])
       const batchTasks = round.outputTaskIds
         .map((taskId) => tasks.find((task) => task.id === taskId))
         .filter((task): task is TaskRecord => Boolean(task && task.agentBatchCallId === item.call_id))
-      if (batchTasks.length < batchItems.length || batchTasks.some((task) => task.status === 'running' || task.falRecoverable || task.customRecoverable)) {
+      if (batchTasks.length < batchItems.length || batchTasks.some((task) => task.status === 'running' || task.falRecoverable || task.customRecoverable || task.serverJobRecoverable)) {
         hasPendingRecoverableCall = true
         continue
       }
@@ -3651,7 +3739,7 @@ function createReadyAgentRecoveredToolState(round: AgentRound, tasks: TaskRecord
   const roundTasks = round.outputTaskIds
     .map((taskId) => tasks.find((task) => task.id === taskId))
     .filter((task): task is TaskRecord => Boolean(task))
-  if (roundTasks.length === 0 || roundTasks.some((task) => task.status === 'running' || task.falRecoverable || task.customRecoverable)) return null
+  if (roundTasks.length === 0 || roundTasks.some((task) => task.status === 'running' || task.falRecoverable || task.customRecoverable || task.serverJobRecoverable)) return null
 
   return {
     additions: [] as ResponsesOutputItem[],
@@ -3696,7 +3784,7 @@ function getAgentRecoveredToolCallCount(output: ResponsesOutputItem[], tasks: Ta
 function getAgentRecoveredFailureError(round: AgentRound, tasks: TaskRecord[]) {
   const failedTasks = round.outputTaskIds
     .map((taskId) => tasks.find((item) => item.id === taskId))
-    .filter((task): task is TaskRecord => Boolean(task && task.status === 'error' && !task.falRecoverable && !task.customRecoverable))
+    .filter((task): task is TaskRecord => Boolean(task && task.status === 'error' && !task.falRecoverable && !task.customRecoverable && !task.serverJobRecoverable))
 
   if (failedTasks.length === 0) return '图像生成失败'
   if (failedTasks.length === 1) return failedTasks[0].error || '图像生成失败'
@@ -4188,7 +4276,7 @@ async function executeAgentRound(
         ...(!hasActualSizeParam(image.actualParams) ? getImageSizeParam(stored) ?? {} : {}),
         n: 1,
       }
-      updateTaskInStore(taskId, {
+      const patch: Partial<TaskRecord> = {
         prompt: image.revisedPrompt ?? latestBeforeUpdate.prompt,
         outputImages: [stored.id],
         actualParams,
@@ -4197,37 +4285,107 @@ async function executeAgentRound(
         rawResponsePayload,
         status: 'done',
         error: null,
+        serverJobIds: undefined,
+        serverJobRecoverable: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - latestBeforeUpdate.createdAt,
         agentToolAction: image.action,
-      })
+      }
+      if (latestBeforeUpdate.serverJobIds?.length) {
+        const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, patch)
+        if (!persisted?.committed) {
+          await deleteUnreferencedImageIds([stored.id])
+          return { taskId, committed: Boolean(persisted?.task.status === 'done') }
+        }
+        await clearLocalServerImageJobRefs(taskId)
+      } else {
+        updateTaskInStore(taskId, patch)
+      }
       useStore.getState().setTaskStreamPreview(taskId)
       return { taskId, committed: true }
     }
 
-    const failAgentImageTask = (toolCallId: string, error: string, rawResponsePayload?: string) => {
+    const failAgentImageTask = async (toolCallId: string, error: string, rawResponsePayload?: string, terminalServerJob = false) => {
       const taskId = taskIdByToolCallId.get(toolCallId)
       if (!taskId) return
       const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
       if (!latestTask || latestTask.status !== 'running') return
 
       useStore.getState().setTaskStreamPreview(taskId)
-      updateTaskInStore(taskId, {
+      if (latestTask.serverJobIds?.length && !terminalServerJob) {
+        const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, {
+          status: 'error',
+          error: '服务端任务结果暂时未能保存到本地，之后会继续读取同一个任务，不会重新提交。',
+          rawResponsePayload,
+          serverJobRecoverable: true,
+          finishedAt: Date.now(),
+          elapsed: Date.now() - latestTask.createdAt,
+        }).catch((persistErr) => {
+          console.warn('保存 Agent 服务端任务恢复状态失败', persistErr)
+          return null
+        })
+        if (!persisted || persisted.committed) scheduleServerJobRecovery(taskId)
+        return
+      }
+
+      const patch: Partial<TaskRecord> = {
         status: 'error',
         error,
         rawResponsePayload,
         falRecoverable: false,
         customRecoverable: false,
+        serverJobIds: undefined,
+        serverJobRecoverable: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - latestTask.createdAt,
-      })
+      }
+      if (latestTask.serverJobIds?.length) {
+        const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, patch)
+        if (persisted?.committed) {
+          await clearLocalServerImageJobRefs(taskId)
+        } else if (!persisted) {
+          useStore.getState().setTasks(useStore.getState().tasks.map((task) => task.id === taskId
+            ? { ...task, status: 'error', error: '服务端任务已经结束，但本地暂时无法保存终态；之后会继续读取同一个任务，不会重新提交。', serverJobRecoverable: true }
+            : task))
+          scheduleServerJobRecovery(taskId)
+        }
+      } else {
+        updateTaskInStore(taskId, patch)
+      }
     }
 
-    const pauseAgentImageTaskForRecovery = (toolCallId: string, err: unknown) => {
+    const pauseAgentImageTaskForRecovery = async (toolCallId: string, err: unknown) => {
       const taskId = taskIdByToolCallId.get(toolCallId)
-      if (!taskId || !isNetworkRecoverableError(err)) return false
+      if (!taskId) return false
       const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
       if (!latestTask || latestTask.status !== 'running') return false
+
+      if (latestTask.serverJobIds?.length) {
+        if (isServerImageJobTerminalError(err)) return false
+        if (!isServerImageJobRecoverableError(err) && !isNetworkRecoverableError(err)) {
+          console.warn('服务端任务结果的本地处理失败，将保留原任务以便恢复', err)
+        }
+        useStore.getState().setTaskStreamPreview(taskId)
+        const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, {
+          status: 'error',
+          error: '服务端任务结果暂时未能保存到本地，之后会继续读取同一个任务，不会重新提交。',
+          serverJobRecoverable: true,
+          finishedAt: Date.now(),
+          elapsed: Date.now() - latestTask.createdAt,
+        }).catch((persistErr) => {
+          console.warn('保存 Agent 服务端任务恢复状态失败', persistErr)
+          return null
+        })
+        if (!persisted) {
+          useStore.getState().setTasks(useStore.getState().tasks.map((task) => task.id === taskId
+            ? { ...task, status: 'error', error: '服务端任务结果暂时未能保存到本地，之后会继续读取同一个任务，不会重新提交。', serverJobRecoverable: true }
+            : task))
+        }
+        if (!persisted || persisted.committed) scheduleServerJobRecovery(taskId)
+        return true
+      }
+
+      if (!isNetworkRecoverableError(err)) return false
 
       if (latestTask.apiProvider === 'fal' && latestTask.falRequestId && latestTask.falEndpoint) {
         useStore.getState().setTaskStreamPreview(taskId)
@@ -4354,6 +4512,16 @@ async function executeAgentRound(
       signal: AbortSignal
       onPartialImage?: (event: { image: string; partialImageIndex?: number }) => void | Promise<void>
     }) => {
+      const task = useStore.getState().tasks.find((item) => item.id === opts.taskId)
+      let refs: Awaited<ReturnType<typeof getServerImageJobRefs>>
+      try {
+        refs = await getServerImageJobRefs(opts.taskId)
+      } catch (err) {
+        throw new ServerImageJobRecoverableError('本地暂时无法读取服务端任务查询凭证，可稍后继续恢复。', err)
+      }
+      if (task?.serverJobIds?.some((jobId) => !refs.some((ref) => ref.jobId === jobId))) {
+        throw new ServerImageJobTerminalError('服务端任务的本地查询凭证已丢失。为避免重复扣费，本站不会自动重新提交，请先检查账户记录。')
+      }
       const result = await callImageApi({
         settings: imageRequestSettings,
         prompt: replaceImageMentionsForApi(opts.prompt, opts.referenceImageDataUrls.length),
@@ -4377,9 +4545,20 @@ async function executeAgentRound(
             customRecoverable: false,
           })
         },
+        serverImageJobs: refs.map((ref) => ({
+          jobId: ref.jobId,
+          token: ref.token,
+          requestIndex: ref.requestIndex,
+        })),
+        onServerImageJobEnqueued: async (job) => {
+          await persistServerImageJobRef(opts.taskId, job)
+        },
       })
       if (opts.signal.aborted) throw createAgentAbortError()
       const dataUrl = result.images[0]
+      if (!dataUrl && refs.length > 0) {
+        throw new ServerImageJobRecoverableError('服务端任务结果暂时未能在本地解析，可稍后继续读取同一个任务。')
+      }
       return {
         image: dataUrl ? {
           dataUrl,
@@ -4445,13 +4624,13 @@ async function executeAgentRound(
           return null
         }
 
-        failAgentImageTask(toolCallId, result.error!, result.rawResponsePayload)
+        await failAgentImageTask(toolCallId, result.error!, result.rawResponsePayload)
         return JSON.stringify({ id: item.id, status: 'error', error: result.error })
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         if (controller.signal.aborted) throw createAgentAbortError()
-        if (pauseAgentImageTaskForRecovery(toolCallId, err)) throw createAgentRecoveryPauseError()
-        failAgentImageTask(toolCallId, error)
+        if (await pauseAgentImageTaskForRecovery(toolCallId, err)) throw createAgentRecoveryPauseError()
+        await failAgentImageTask(toolCallId, error, undefined, isServerImageJobTerminalError(err))
         return JSON.stringify({ id: item.id, status: 'error', error })
       }
     }
@@ -4570,7 +4749,7 @@ async function executeAgentRound(
           const r = settled.value
           if (r.image && !r.committed) continue
           if (!r.image) {
-            failAgentImageTask(batchExecutionItems[i].batchToolCallId, r.error!, r.rawResponsePayload)
+            await failAgentImageTask(batchExecutionItems[i].batchToolCallId, r.error!, r.rawResponsePayload)
           }
           outputImages.push({
             id: r.batchItemId,
@@ -4579,11 +4758,11 @@ async function executeAgentRound(
           })
         } else {
           const error = settled.reason instanceof Error ? settled.reason.message : String(settled.reason)
-          if (isAgentRecoveryPauseError(settled.reason) || pauseAgentImageTaskForRecovery(batchExecutionItems[i].batchToolCallId, settled.reason)) {
+          if (isAgentRecoveryPauseError(settled.reason) || await pauseAgentImageTaskForRecovery(batchExecutionItems[i].batchToolCallId, settled.reason)) {
             pausedForRecovery = true
             continue
           }
-          failAgentImageTask(batchExecutionItems[i].batchToolCallId, error)
+          await failAgentImageTask(batchExecutionItems[i].batchToolCallId, error, undefined, isServerImageJobTerminalError(settled.reason))
           outputImages.push({
             id: batchItem.id,
             status: 'error',
@@ -4660,7 +4839,7 @@ async function executeAgentRound(
               if (controller.signal.aborted) return
               await ensureStreamingAgentTask(toolCallId)
               if (controller.signal.aborted) return
-              failAgentImageTask(toolCallId, error)
+              await failAgentImageTask(toolCallId, error)
             }
           : undefined,
       })
@@ -5018,8 +5197,44 @@ async function executeTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
   if (!task) return
+  let storedServerJobRefs: Awaited<ReturnType<typeof getServerImageJobRefs>> = []
+  if (task.serverJobIds?.length) {
+    try {
+      storedServerJobRefs = await getServerImageJobRefs(taskId)
+    } catch (err) {
+      console.warn('读取服务端图片任务查询凭证失败', err)
+      const recoverableTask = {
+        ...task,
+        status: 'error' as const,
+        error: '本地暂时无法读取服务端任务查询凭证，之后会继续恢复同一个任务，不会重新提交。',
+        serverJobRecoverable: true,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      }
+      useStore.getState().setTasks(useStore.getState().tasks.map((item) => item.id === taskId ? recoverableTask : item))
+      scheduleServerJobRecovery(taskId)
+      return
+    }
+  }
+  const serverJobRefs = [...storedServerJobRefs]
+
+  if (task.serverJobIds?.length && task.serverJobIds.some((jobId) => !storedServerJobRefs.some((ref) => ref.jobId === jobId))) {
+    const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, {
+      status: 'error',
+      error: '服务端任务的本地查询凭证已丢失。为避免重复扣费，本站不会自动重新提交，请先检查账户记录。',
+      serverJobRecoverable: false,
+      finishedAt: Date.now(),
+      elapsed: Date.now() - task.createdAt,
+    }).catch((err) => {
+      console.warn('保存服务端任务凭证丢失状态失败', err)
+      return null
+    })
+    if (persisted?.committed) await clearLocalServerImageJobRefs(taskId)
+    return
+  }
+
   const taskProfile = getTaskApiProfile(settings, task)
-  if (!taskProfile && task.apiProfileId) {
+  if (!taskProfile && task.apiProfileId && serverJobRefs.length === 0) {
     updateTaskInStore(taskId, {
       status: 'error',
       error: '找不到此任务所使用的 API 配置。',
@@ -5031,22 +5246,31 @@ async function executeTask(taskId: string) {
     return
   }
   const activeProfile = taskProfile ?? getActiveApiProfile(settings)
-  const requestProfile = task.apiModel && task.apiModel !== activeProfile.model
-    ? { ...activeProfile, model: task.apiModel }
-    : activeProfile
+  const requestProfile: ApiProfile = serverJobRefs.length > 0
+    ? {
+      ...activeProfile,
+      provider: 'openai',
+      apiMode: task.apiMode ?? activeProfile.apiMode,
+      model: task.apiModel ?? activeProfile.model,
+      codexCli: false,
+      streamImages: (task.apiMode ?? activeProfile.apiMode) === 'images' && serverJobRefs.length > 1,
+    }
+    : task.apiModel && task.apiModel !== activeProfile.model
+      ? { ...activeProfile, model: task.apiModel }
+      : activeProfile
   const requestSettings = createSettingsForApiProfile(settings, requestProfile)
-  const taskProvider = task.apiProvider ?? requestProfile.provider
+  const taskProvider = serverJobRefs.length > 0 ? 'openai' : task.apiProvider ?? requestProfile.provider
   let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint
         ? { requestId: task.falRequestId, endpoint: task.falEndpoint }
     : null
   let customTaskInfo: { taskId: string } | null = task.customTaskId
     ? { taskId: task.customTaskId }
     : null
-
   const usesOpenAIWatchdog =
     taskProvider !== 'fal' &&
     !isAsyncCustomProviderTask(requestSettings, taskProvider, task.inputImageIds.length > 0) &&
-    !usesConcurrentOpenAIImageRequests(requestProfile, task.params)
+    !usesConcurrentOpenAIImageRequests(requestProfile, task.params) &&
+    !task.serverJobIds?.length
   if (usesOpenAIWatchdog) {
     scheduleOpenAIWatchdog(taskId, requestProfile.timeout, requestProfile)
   }
@@ -5054,13 +5278,15 @@ async function executeTask(taskId: string) {
   try {
     // 获取输入图片 data URLs
     const inputDataUrls: string[] = []
-    for (const imgId of task.inputImageIds) {
-      const dataUrl = await ensureImageCached(imgId)
-      if (!dataUrl) throw new Error('输入图片已不存在')
-      inputDataUrls.push(dataUrl)
+    if (serverJobRefs.length === 0) {
+      for (const imgId of task.inputImageIds) {
+        const dataUrl = await ensureImageCached(imgId)
+        if (!dataUrl) throw new Error('输入图片已不存在')
+        inputDataUrls.push(dataUrl)
+      }
     }
     let maskDataUrl: string | undefined
-    if (task.maskImageId) {
+    if (task.maskImageId && serverJobRefs.length === 0) {
       maskDataUrl = await ensureImageCached(task.maskImageId)
       if (!maskDataUrl) throw new Error('遮罩图片已不存在')
     }
@@ -5089,6 +5315,17 @@ async function executeTask(taskId: string) {
           customTaskId: request.taskId,
           customRecoverable: false,
         })
+      },
+      serverImageJobs: serverJobRefs.map((ref) => ({
+        jobId: ref.jobId,
+        token: ref.token,
+        requestIndex: ref.requestIndex,
+      })),
+      onServerImageJobEnqueued: async (job) => {
+        const ref = await persistServerImageJobRef(taskId, job)
+        const existingIndex = serverJobRefs.findIndex((item) => item.requestIndex === job.requestIndex)
+        if (existingIndex >= 0) serverJobRefs[existingIndex] = ref
+        else serverJobRefs.push(ref)
       },
       onStreamActivity: () => {
         if (usesOpenAIWatchdog) scheduleOpenAIWatchdog(taskId, requestProfile.timeout, requestProfile, true)
@@ -5134,7 +5371,7 @@ async function executeTask(taskId: string) {
       (revisedPrompt) => revisedPrompt?.trim() && revisedPrompt.trim() !== requestPrompt.trim(),
     )
     const hasRevisedPromptValue = shouldStoreRevisedPrompts && result.revisedPrompts?.some((revisedPrompt) => revisedPrompt?.trim())
-    if (taskProvider === 'openai' && activeProfile.apiMode === 'responses' && !activeProfile.codexCli) {
+    if (taskProvider === 'openai' && requestProfile.apiMode === 'responses' && !requestProfile.codexCli) {
       if (promptWasRevised) {
         showCodexCliPrompt()
       } else if (!hasRevisedPromptValue) {
@@ -5152,7 +5389,7 @@ async function executeTask(taskId: string) {
     const partialImageIdsToClean = latestBeforeUpdate.streamPartialImageIds || []
     clearOpenAIWatchdogTimer(taskId)
     useStore.getState().setTaskStreamPreview(taskId)
-    updateTaskInStore(taskId, {
+    const completionPatch: Partial<TaskRecord> = {
       outputImages: outputIds,
       transparentOriginalImages: transparentOriginalImageIds,
       outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
@@ -5166,7 +5403,20 @@ async function executeTask(taskId: string) {
       elapsed: Date.now() - task.createdAt,
       falRecoverable: false,
       customRecoverable: false,
-    })
+      serverJobIds: undefined,
+      serverJobRecoverable: false,
+    }
+    if (serverJobRefs.length > 0) {
+      const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, completionPatch)
+      if (!persisted?.committed) {
+        await deleteUnreferencedImageIds([...outputIds, ...(transparentOriginalImageIds ?? [])])
+        return
+      }
+      clearServerJobRecoveryTimer(taskId)
+      await clearLocalServerImageJobRefs(taskId)
+    } else {
+      updateTaskInStore(taskId, completionPatch)
+    }
     void deleteUnreferencedImageIds(partialImageIdsToClean)
 
     const failedCount = result.failedRequests?.length ?? 0
@@ -5175,6 +5425,7 @@ async function executeTask(taskId: string) {
       : `生成完成，共 ${outputIds.length} 张图片`
     useStore.getState().showToast(completionMessage, failedCount > 0 ? 'error' : 'success')
     if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `${completionMessage}。`)
+    else void continueRecoveredAgentRound(taskId)
     const currentMask = useStore.getState().maskDraft
     if (
       maskDataUrl &&
@@ -5193,7 +5444,66 @@ async function executeTask(taskId: string) {
       ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
       : null)
     const latestCustomTaskInfo = customTaskInfo ?? (latestTask.customTaskId ? { taskId: latestTask.customTaskId } : null)
-    if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isNetworkRecoverableError(err)) {
+    if (serverJobRefs.length > 0 && isServerImageJobTerminalError(err)) {
+      const errorMessage = normalizeImageApiErrorMessage(err instanceof Error ? err.message : String(err))
+      const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, {
+        status: 'error',
+        error: errorMessage,
+        ...getRawErrorPayload(err),
+        falRecoverable: false,
+        customRecoverable: false,
+        serverJobIds: undefined,
+        serverJobRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      }).catch((persistErr) => {
+        console.warn('保存服务端任务终态失败', persistErr)
+        return null
+      })
+      if (persisted?.committed) {
+        await clearLocalServerImageJobRefs(taskId)
+      } else if (!persisted) {
+        const recoverableTask = {
+          ...latestTask,
+          status: 'error' as const,
+          error: '服务端任务已经结束，但本地暂时无法保存终态；之后会继续读取同一个任务，不会重新提交。',
+          serverJobRecoverable: true,
+          finishedAt: Date.now(),
+          elapsed: Date.now() - task.createdAt,
+        }
+        useStore.getState().setTasks(useStore.getState().tasks.map((item) => item.id === taskId ? recoverableTask : item))
+        scheduleServerJobRecovery(taskId)
+      }
+      useStore.getState().setDetailTaskId(taskId)
+    } else if (serverJobRefs.length > 0) {
+      const error = isServerImageJobRecoverableError(err)
+        ? '浏览器与任务服务的连接已断开，服务端任务仍会继续执行；恢复网络后将继续查询同一个任务，不会重新提交。'
+        : '服务端任务结果暂时未能保存到本地，之后会继续读取同一个任务，不会重新提交。'
+      const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, {
+        status: 'error' as const,
+        error,
+        serverJobIds: serverJobRefs.sort((a, b) => a.requestIndex - b.requestIndex).map((ref) => ref.jobId),
+        serverJobRecoverable: true,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      }).catch((persistErr) => {
+        console.warn('保存服务端任务恢复状态失败', persistErr)
+        return null
+      })
+      if (!persisted) {
+        const recoverableTask = {
+          ...latestTask,
+          status: 'error' as const,
+          error,
+          serverJobIds: serverJobRefs.map((ref) => ref.jobId),
+          serverJobRecoverable: true,
+          finishedAt: Date.now(),
+          elapsed: Date.now() - task.createdAt,
+        }
+        useStore.getState().setTasks(useStore.getState().tasks.map((item) => item.id === taskId ? recoverableTask : item))
+      }
+      if (!persisted || persisted.committed) scheduleServerJobRecovery(taskId)
+    } else if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isNetworkRecoverableError(err)) {
       updateTaskInStore(taskId, {
         status: 'error',
         error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
@@ -5236,6 +5546,8 @@ async function executeTask(taskId: string) {
         ...getRawErrorPayload(err),
         falRecoverable: false,
         customRecoverable: false,
+        serverJobIds: serverJobRefs.length > 0 ? undefined : latestTask.serverJobIds,
+        serverJobRecoverable: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
       })
@@ -5763,6 +6075,7 @@ async function removeTasks(taskIds: string[], updateState?: TaskDeletionStateUpd
     if (controller) deletedActiveAgentTasks.set(task.id, { task, controller })
     clearFalRecoveryTimer(task.id)
     clearCustomRecoveryTimer(task.id)
+    clearServerJobRecoveryTimer(task.id)
     clearOpenAIWatchdogTimer(task.id)
   }
 
@@ -5866,6 +6179,27 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
   }
 
   showToast('所选数据已清空', 'success')
+}
+
+async function recoverServerJobTask(taskId: string) {
+  clearServerJobRecoveryTimer(taskId)
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task || !task.serverJobIds?.length || task.status === 'done') return
+
+  try {
+    const persisted = (await getAllTasks()).find((item) => item.id === taskId)
+    if (persisted?.status === 'done') {
+      useStore.getState().setTasks(useStore.getState().tasks.map((item) => item.id === taskId ? persisted : item))
+      return
+    }
+  } catch (err) {
+    console.warn('复核待恢复服务端任务失败', err)
+  }
+
+  useStore.getState().setTasks(useStore.getState().tasks.map((item) => item.id === taskId
+    ? { ...item, status: 'running', error: null, serverJobRecoverable: false, finishedAt: null }
+    : item))
+  await executeTask(taskId)
 }
 
 async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<ReturnType<typeof getCustomQueuedImageResult>>) {

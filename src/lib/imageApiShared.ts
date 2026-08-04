@@ -1,4 +1,5 @@
 import type { AppSettings, TaskParams } from '../types'
+import type { ServerImageJobRequestRef } from './serverImageJobs'
 import { blobToDataUrl } from './dataUrl'
 
 export const MIME_MAP: Record<string, string> = {
@@ -19,6 +20,8 @@ export interface CallApiOptions {
   maskDataUrl?: string
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
+  serverImageJobs?: ServerImageJobRequestRef[]
+  onServerImageJobEnqueued?: (job: ServerImageJobRequestRef) => void | Promise<void>
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
   onStreamActivity?: () => void
 }

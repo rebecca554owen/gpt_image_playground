@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import { callImageApi } from './api'
+import { isServerImageJobRecoverableError, isServerImageJobTerminalError } from './serverImageJobs'
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void
@@ -678,6 +679,196 @@ describe('callImageApi', () => {
     ])
     expect(result.failedRequests).toEqual([{ requestIndex: 2, error: 'Failed to fetch' }])
     expect(result.actualParams).toMatchObject({ n: 2 })
+  })
+
+  it('keeps a concurrent server job task recoverable when only one stored result download fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/job-b')) throw new TypeError('Load failed')
+      if (url.endsWith('/result')) {
+        return Response.json({ output: [{ type: 'image_generation_call', result: 'aW1hZ2UtYQ==' }] })
+      }
+      return Response.json({ id: 'job-a', status: 'succeeded', hasResult: true })
+    })
+
+    const request = callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 2 },
+      inputImageDataUrls: [],
+      serverImageJobs: [
+        { jobId: 'job-a', token: 'token-a', requestIndex: 0 },
+        { jobId: 'job-b', token: 'token-b', requestIndex: 1 },
+      ],
+    })
+
+    await expect(request).rejects.toSatisfy((err: unknown) => isServerImageJobRecoverableError(err))
+  })
+
+  it('wraps an asynchronous stored image parsing failure before concurrent aggregation', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url === 'https://cdn.example.com/missing.png') throw new TypeError('image download failed')
+      if (url.endsWith('/result')) {
+        return url.includes('job-b')
+          ? Response.json({ data: [{ url: 'https://cdn.example.com/missing.png' }] })
+          : Response.json({ data: [{ b64_json: 'aW1hZ2UtYQ==' }] })
+      }
+      return Response.json({ id: url.includes('job-b') ? 'job-b' : 'job-a', status: 'succeeded', hasResult: true })
+    })
+
+    const request = callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'images' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 2 },
+      inputImageDataUrls: [],
+      serverImageJobs: [
+        { jobId: 'job-a', token: 'token-a', requestIndex: 0 },
+        { jobId: 'job-b', token: 'token-b', requestIndex: 1 },
+      ],
+    })
+
+    await expect(request).rejects.toSatisfy((err: unknown) => isServerImageJobRecoverableError(err))
+  })
+
+  it('wraps an asynchronous stored Responses stream parsing failure as recoverable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).endsWith('/result')) {
+        return new Response('data: {"type":"response.completed","response":{"output":[]}}\n\ndata: [DONE]\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+      return Response.json({ id: 'stream-job', status: 'succeeded', hasResult: true })
+    })
+
+    const request = callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'responses', streamImages: false },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      serverImageJobs: [{ jobId: 'stream-job', token: 'stream-token', requestIndex: 0 }],
+    })
+
+    await expect(request).rejects.toSatisfy((err: unknown) => isServerImageJobRecoverableError(err))
+  })
+
+  it('treats an empty saved-job list as a new Responses request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      output: [{ type: 'image_generation_call', result: 'aW1hZ2U=' }],
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      serverImageJobs: [],
+    })
+
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes only sparse persisted request indexes and never fills their gaps', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      expect(init?.method).not.toBe('PUT')
+      const url = String(input)
+      const jobId = url.includes('job-2') ? 'job-2' : 'job-0'
+      if (url.endsWith('/result')) {
+        return Response.json({ output: [{ type: 'image_generation_call', result: jobId === 'job-2' ? 'aW1hZ2UtMg==' : 'aW1hZ2UtMA==' }] })
+      }
+      return Response.json({ id: jobId, status: 'succeeded', hasResult: true })
+    })
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 4 },
+      inputImageDataUrls: [],
+      serverImageJobs: [
+        { jobId: 'job-0', token: 'token-0', requestIndex: 0 },
+        { jobId: 'job-2', token: 'token-2', requestIndex: 2 },
+      ],
+    })
+
+    expect(result.images).toEqual([
+      'data:image/png;base64,aW1hZ2UtMA==',
+      'data:image/png;base64,aW1hZ2UtMg==',
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(fetchMock.mock.calls.every(([input]) => !String(input).includes('job-1') && !String(input).includes('job-3'))).toBe(true)
+  })
+
+  it('lets one persisted Images API job return all requested images without creating sibling jobs', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      expect(init?.method).not.toBe('PUT')
+      if (String(input).endsWith('/result')) {
+        return Response.json({
+          data: [
+            { b64_json: 'aW1hZ2UtMQ==' },
+            { b64_json: 'aW1hZ2UtMg==' },
+            { b64_json: 'aW1hZ2UtMw==' },
+            { b64_json: 'aW1hZ2UtNA==' },
+          ],
+        })
+      }
+      return Response.json({ id: 'single-job', status: 'succeeded', hasResult: true })
+    })
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'images', codexCli: true, streamImages: true },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, n: 4 },
+      inputImageDataUrls: [],
+      serverImageJobs: [{ jobId: 'single-job', token: 'single-token', requestIndex: 0 }],
+    })
+
+    expect(result.images).toHaveLength(4)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('resumes an existing Images API job without rebuilding deleted input images or using an API key', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      expect(init?.method).not.toBe('POST')
+      expect(init?.method).not.toBe('PUT')
+      if (String(input).endsWith('/result')) {
+        return Response.json({ data: [{ b64_json: 'aW1hZ2U=' }] })
+      }
+      return Response.json({ id: 'saved-job', status: 'succeeded', hasResult: true })
+    })
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'images' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: ['not-a-data-url'],
+      maskDataUrl: 'also-not-a-data-url',
+      serverImageJobs: [{ jobId: 'saved-job', token: 'saved-token', requestIndex: 0 }],
+    })
+
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves the terminal marker on a stored upstream timeout response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).endsWith('/result')) {
+        return Response.json({ error: { message: 'upstream timeout' } }, { status: 504 })
+      }
+      return Response.json({ id: 'saved-job', status: 'failed', hasResult: true, upstreamStatus: 504 })
+    })
+
+    const request = callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      serverImageJobs: [{ jobId: 'saved-job', token: 'saved-token', requestIndex: 0 }],
+    })
+
+    await expect(request).rejects.toSatisfy((err: unknown) =>
+      isServerImageJobTerminalError(err) && err instanceof Error && err.message.includes('upstream timeout'),
+    )
   })
 
   it('parses Responses API image result objects in gallery mode', async () => {

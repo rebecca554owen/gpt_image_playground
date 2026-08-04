@@ -182,6 +182,10 @@ export interface TaskRecord {
   customTaskId?: string
   /** 自定义异步任务是否等待自动恢复 */
   customRecoverable?: boolean
+  /** 站内任务代理的任务 ID，按并发请求序号保存 */
+  serverJobIds?: string[]
+  /** 站内任务代理暂时不可达时是否等待自动恢复 */
+  serverJobRecoverable?: boolean
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */
   actualParams?: Partial<TaskParams>
   /** 输出图片对应的实际生效参数，key 为 outputImages 中的图片 id */
@@ -234,6 +238,15 @@ export interface TaskRecord {
   agentBatchItemId?: string
   /** Agent 图像工具实际动作 */
   agentToolAction?: 'generate' | 'edit' | 'auto' | string
+}
+
+export interface ServerImageJobRef {
+  id: string
+  taskId: string
+  jobId: string
+  token: string
+  requestIndex: number
+  createdAt: number
 }
 
 export interface FavoriteCollection {

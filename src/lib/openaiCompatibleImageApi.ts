@@ -3,6 +3,14 @@ import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './ca
 import { runLimitedSettled } from './concurrency'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import {
+  fetchWithServerImageJob,
+  isServerImageJobRecoverableError,
+  isServerImageJobTerminalError,
+  isServerImageJobTerminalResponse,
+  ServerImageJobRecoverableError,
+  ServerImageJobTerminalError,
+} from './serverImageJobs'
+import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
   appendStreamingFormatHint,
@@ -702,14 +710,26 @@ export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile
 
 async function callImagesApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const n = opts.params.n > 0 ? opts.params.n : 1
+  const savedRequestIndexes = opts.serverImageJobs?.length
+    ? opts.serverImageJobs
+      .slice()
+      .sort((a, b) => a.requestIndex - b.requestIndex)
+      .map((job) => job.requestIndex)
+    : undefined
+  if (savedRequestIndexes?.length === 1) {
+    return callImagesApiSingle(opts, profile, savedRequestIndexes[0])
+  }
+  if (savedRequestIndexes && savedRequestIndexes.length > 1) {
+    return callImagesApiConcurrent(opts, profile, savedRequestIndexes)
+  }
   if ((profile.codexCli || (profile.streamImages && n > 1)) && n > 1) {
-    return callImagesApiConcurrent(opts, profile, n)
+    return callImagesApiConcurrent(opts, profile, Array.from({ length: n }, (_, index) => index))
   }
 
   return callImagesApiSingle(opts, profile)
 }
 
-async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile, n: number): Promise<CallApiResult> {
+async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile, requestIndexes: number[]): Promise<CallApiResult> {
   const singleOpts = {
     ...opts,
     params: {
@@ -719,21 +739,26 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
     },
   }
   const results = await runLimitedSettled(
-    Array.from({ length: n }),
+    requestIndexes,
     OPENAI_COMPATIBLE_MULTI_REQUEST_CONCURRENCY,
-    (_, requestIndex) => callImagesApiSingle({
+    (requestIndex) => callImagesApiSingle({
       ...singleOpts,
       onPartialImage: opts.onPartialImage
         ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
         : undefined,
-    }, profile),
+    }, profile, requestIndex),
   )
+
+  const recoverableFailure = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected' && isServerImageJobRecoverableError(result.reason),
+  )
+  if (recoverableFailure) throw recoverableFailure.reason
 
   const successfulResults = results
     .filter((r): r is PromiseFulfilledResult<CallApiResult> => r.status === 'fulfilled')
     .map((r) => r.value)
   const failedRequests = results.flatMap((r, requestIndex) =>
-    r.status === 'rejected' ? [{ requestIndex, error: getErrorMessage(r.reason) }] : [],
+    r.status === 'rejected' ? [{ requestIndex: requestIndexes[requestIndex], error: getErrorMessage(r.reason) }] : [],
   )
 
   if (successfulResults.length === 0) {
@@ -780,7 +805,7 @@ function createResettableRequestTimeout(controller: AbortController, timeoutSeco
   }
 }
 
-async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
+async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, requestIndex = 0): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
   const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
     ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${originalPrompt}`
@@ -794,11 +819,26 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
 
   const controller = new AbortController()
   const timeout = createResettableRequestTimeout(controller, profile.timeout)
+  const existingJob = opts.serverImageJobs?.find((job) => job.requestIndex === requestIndex)
+  let serverJobCreated = false
 
   try {
     let response: Response
 
-    if (isEdit) {
+    if (existingJob) {
+      response = await fetchWithServerImageJob('/api-proxy/images/generations', {
+        method: 'POST',
+        signal: controller.signal,
+      }, {
+        existingJob,
+        requestIndex,
+        signal: controller.signal,
+        onActivity: () => {
+          timeout.reset()
+          opts.onStreamActivity?.()
+        },
+      })
+    } else if (isEdit) {
       const formData = new FormData()
       formData.append('model', profile.model)
       formData.append('prompt', prompt)
@@ -852,12 +892,24 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         formData.append('mask', maskBlob, 'mask.png')
       }
 
-      response = await fetch(buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy), {
+      const url = buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy)
+      response = await fetchWithServerImageJob(url, {
         method: 'POST',
         headers: requestHeaders,
         cache: 'no-store',
         body: formData,
         signal: controller.signal,
+      }, {
+        requestIndex,
+        signal: controller.signal,
+        onJobCreated: async (job) => {
+          serverJobCreated = true
+          await opts.onServerImageJobEnqueued?.(job)
+        },
+        onActivity: () => {
+          timeout.reset()
+          opts.onStreamActivity?.()
+        },
       })
     } else {
       const body: Record<string, unknown> = {
@@ -886,7 +938,8 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         body.partial_images = getStreamPartialImages(profile)
       }
 
-      response = await fetch(buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy), {
+      const url = buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy)
+      response = await fetchWithServerImageJob(url, {
         method: 'POST',
         headers: {
           ...requestHeaders,
@@ -895,22 +948,41 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         cache: 'no-store',
         body: JSON.stringify(body),
         signal: controller.signal,
+      }, {
+        requestIndex,
+        signal: controller.signal,
+        onJobCreated: async (job) => {
+          serverJobCreated = true
+          await opts.onServerImageJobEnqueued?.(job)
+        },
+        onActivity: () => {
+          timeout.reset()
+          opts.onStreamActivity?.()
+        },
       })
     }
 
     if (!response.ok) {
       const errorMessage = await getApiErrorMessage(response)
-      throw new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages))
+      const message = maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages)
+      if (isServerImageJobTerminalResponse(response)) throw new ServerImageJobTerminalError(message)
+      throw new Error(message)
     }
 
-    if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseImagesApiStreamResponse(response, mime, opts.onPartialImage, () => {
+    if (isEventStreamResponse(response)) {
+      return await parseImagesApiStreamResponse(response, mime, opts.onPartialImage, () => {
         timeout.reset()
         opts.onStreamActivity?.()
       })
     }
 
-    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    return await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+  } catch (err) {
+    if ((existingJob || serverJobCreated) && !isServerImageJobTerminalError(err)) {
+      if (isServerImageJobRecoverableError(err)) throw err
+      throw new ServerImageJobRecoverableError('服务端任务结果尚未能在本地完成读取，可稍后继续获取同一个任务。', err)
+    }
+    throw err
   } finally {
     timeout.clear()
   }
@@ -1220,26 +1292,41 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
 
 async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const n = opts.params.n > 0 ? opts.params.n : 1
-  if (n === 1) {
+  const savedRequestIndexes = opts.serverImageJobs?.length
+    ? opts.serverImageJobs
+      .slice()
+      .sort((a, b) => a.requestIndex - b.requestIndex)
+      .map((job) => job.requestIndex)
+    : undefined
+  if (savedRequestIndexes?.length === 1) {
+    return callResponsesImageApiSingle(opts, profile, savedRequestIndexes[0])
+  }
+  if (!savedRequestIndexes && n === 1) {
     return callResponsesImageApiSingle(opts, profile)
   }
+  const requestIndexes = savedRequestIndexes ?? Array.from({ length: n }, (_, index) => index)
 
   const results = await runLimitedSettled(
-    Array.from({ length: n }),
+    requestIndexes,
     OPENAI_COMPATIBLE_MULTI_REQUEST_CONCURRENCY,
-    (_, requestIndex) => callResponsesImageApiSingle({
+    (requestIndex) => callResponsesImageApiSingle({
       ...opts,
       onPartialImage: opts.onPartialImage
         ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
         : undefined,
-    }, profile),
+    }, profile, requestIndex),
   )
+
+  const recoverableFailure = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected' && isServerImageJobRecoverableError(result.reason),
+  )
+  if (recoverableFailure) throw recoverableFailure.reason
   
   const successfulResults = results
     .filter((r): r is PromiseFulfilledResult<CallApiResult> => r.status === 'fulfilled')
     .map((r) => r.value)
   const failedRequests = results.flatMap((r, requestIndex) =>
-    r.status === 'rejected' ? [{ requestIndex, error: getErrorMessage(r.reason) }] : [],
+    r.status === 'rejected' ? [{ requestIndex: requestIndexes[requestIndex], error: getErrorMessage(r.reason) }] : [],
   )
 
   if (successfulResults.length === 0) {
@@ -1271,7 +1358,7 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
   }
 }
 
-async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
+async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiProfile, requestIndex = 0): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
@@ -1279,47 +1366,79 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const requestHeaders = createRequestHeaders(profile)
   const controller = new AbortController()
   const timeout = createResettableRequestTimeout(controller, profile.timeout)
+  const existingJob = opts.serverImageJobs?.find((job) => job.requestIndex === requestIndex)
+  let serverJobCreated = false
 
   try {
-    if (opts.maskDataUrl) {
-      assertMaskEditFileSize('遮罩主图文件', getDataUrlDecodedByteSize(inputImageDataUrls[0] ?? ''))
-      assertMaskEditFileSize('遮罩文件', getDataUrlDecodedByteSize(opts.maskDataUrl))
-    }
-    assertImageInputPayloadSize(
-      inputImageDataUrls.reduce((sum, dataUrl) => sum + getDataUrlEncodedByteSize(dataUrl), 0) +
-        (opts.maskDataUrl ? getDataUrlEncodedByteSize(opts.maskDataUrl) : 0),
-    )
+    let response: Response
+    if (existingJob) {
+      response = await fetchWithServerImageJob('/api-proxy/responses', {
+        method: 'POST',
+        signal: controller.signal,
+      }, {
+        existingJob,
+        requestIndex,
+        signal: controller.signal,
+        onActivity: () => {
+          timeout.reset()
+          opts.onStreamActivity?.()
+        },
+      })
+    } else {
+      if (opts.maskDataUrl) {
+        assertMaskEditFileSize('遮罩主图文件', getDataUrlDecodedByteSize(inputImageDataUrls[0] ?? ''))
+        assertMaskEditFileSize('遮罩文件', getDataUrlDecodedByteSize(opts.maskDataUrl))
+      }
+      assertImageInputPayloadSize(
+        inputImageDataUrls.reduce((sum, dataUrl) => sum + getDataUrlEncodedByteSize(dataUrl), 0) +
+          (opts.maskDataUrl ? getDataUrlEncodedByteSize(opts.maskDataUrl) : 0),
+      )
 
-    const body: Record<string, unknown> = {
-      model: profile.model,
-      input: createResponsesInput(prompt, inputImageDataUrls, opts.settings.allowPromptRewrite),
-      tools: [createResponsesImageTool(params, inputImageDataUrls.length > 0, profile, opts.maskDataUrl)],
-    }
-    if (!profile.codexCli) {
-      body.tool_choice = 'required'
-    }
-    if (profile.streamImages) {
-      body.stream = true
-    }
+      const body: Record<string, unknown> = {
+        model: profile.model,
+        input: createResponsesInput(prompt, inputImageDataUrls, opts.settings.allowPromptRewrite),
+        tools: [createResponsesImageTool(params, inputImageDataUrls.length > 0, profile, opts.maskDataUrl)],
+      }
+      if (!profile.codexCli) {
+        body.tool_choice = 'required'
+      }
+      if (profile.streamImages) {
+        body.stream = true
+      }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
-      method: 'POST',
-      headers: {
-        ...requestHeaders,
-        'Content-Type': 'application/json',
-      },
-      cache: 'no-store',
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
+      const url = buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy)
+      response = await fetchWithServerImageJob(url, {
+        method: 'POST',
+        headers: {
+          ...requestHeaders,
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }, {
+        requestIndex,
+        signal: controller.signal,
+        onJobCreated: async (job) => {
+          serverJobCreated = true
+          await opts.onServerImageJobEnqueued?.(job)
+        },
+        onActivity: () => {
+          timeout.reset()
+          opts.onStreamActivity?.()
+        },
+      })
+    }
 
     if (!response.ok) {
       const errorMessage = await getApiErrorMessage(response)
-      throw new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages))
+      const message = maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages)
+      if (isServerImageJobTerminalResponse(response)) throw new ServerImageJobTerminalError(message)
+      throw new Error(message)
     }
 
-    if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage, () => {
+    if (isEventStreamResponse(response)) {
+      return await parseResponsesApiStreamResponse(response, mime, opts.onPartialImage, () => {
         timeout.reset()
         opts.onStreamActivity?.()
       })
@@ -1345,6 +1464,12 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       ),
       revisedPrompts: imageResults.map((result) => result.revisedPrompt),
     }
+  } catch (err) {
+    if ((existingJob || serverJobCreated) && !isServerImageJobTerminalError(err)) {
+      if (isServerImageJobRecoverableError(err)) throw err
+      throw new ServerImageJobRecoverableError('服务端任务结果尚未能在本地完成读取，可稍后继续获取同一个任务。', err)
+    }
+    throw err
   } finally {
     timeout.clear()
   }

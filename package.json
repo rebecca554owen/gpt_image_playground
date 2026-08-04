@@ -9,8 +9,10 @@
     "build": "tsc -b && vite build",
     "deploy:cf": "npm run build && wrangler deploy",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "npm run test:frontend && npm run test:server",
+    "test:frontend": "vitest run src",
+    "test:server": "node --test server/*.test.mjs",
+    "test:watch": "vitest src"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.0",

@@ -24,6 +24,11 @@ if [ "$SHOW_DEFAULT_CONFIG_ONLY" = "true" ]; then
     DEFAULT_CONFIG_ONLY=true
 fi
 
+IMAGE_JOBS_AVAILABLE=false
+if [ "$ENABLE_API_PROXY" = "true" ] && [ "$ENABLE_IMAGE_JOBS" = "true" ]; then
+    IMAGE_JOBS_AVAILABLE=true
+fi
+
 escape_sed_replacement() {
     printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
 }
@@ -41,6 +46,7 @@ find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_AP
 find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DOCKER_DEPLOYMENT_PLACEHOLDER__|true|g" {} +
 find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DOCKER_LEGACY_API_URL_USED_PLACEHOLDER__|$DOCKER_LEGACY_API_URL_USED|g" {} +
 find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_SHOW_DEFAULT_CONFIG_ONLY_PLACEHOLDER__|$DEFAULT_CONFIG_ONLY|g" {} +
+find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_IMAGE_JOBS_AVAILABLE_PLACEHOLDER__|$IMAGE_JOBS_AVAILABLE|g" {} +
 
 # JS 文件名由构建内容生成，但运行时替换不会改变文件名。追加配置指纹，避免浏览器长期缓存旧配置。
 RUNTIME_CONFIG_VERSION=$(printf '%s\n' \
@@ -48,7 +54,8 @@ RUNTIME_CONFIG_VERSION=$(printf '%s\n' \
     "$API_PROXY_AVAILABLE" \
     "$API_PROXY_LOCKED" \
     "$DOCKER_LEGACY_API_URL_USED" \
-    "$DEFAULT_CONFIG_ONLY" | cksum | awk '{print $1}')
+    "$DEFAULT_CONFIG_ONLY" \
+    "$IMAGE_JOBS_AVAILABLE" | cksum | awk '{print $1}')
 sed -i 's|\.js?runtime=[^"]*"|.js"|g' /usr/share/nginx/html/index.html
 sed -i "s|\.js\"|.js?runtime=$RUNTIME_CONFIG_VERSION\"|g" /usr/share/nginx/html/index.html
 
@@ -56,6 +63,11 @@ sed -i "s|\.js\"|.js?runtime=$RUNTIME_CONFIG_VERSION\"|g" /usr/share/nginx/html/
 if [ "$ENABLE_API_PROXY" != "true" ]; then
     # 删除代理配置块
     sed -i '/# BEGIN API PROXY/,/# END API PROXY/d' /etc/nginx/conf.d/default.conf
+fi
+
+
+if [ "$IMAGE_JOBS_AVAILABLE" != "true" ]; then
+    sed -i '/# BEGIN IMAGE JOBS/,/# END IMAGE JOBS/d' /etc/nginx/conf.d/default.conf
 fi
 
 exec "$@"

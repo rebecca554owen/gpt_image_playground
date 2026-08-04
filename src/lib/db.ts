@@ -1,11 +1,12 @@
-import type { AgentConversation, TaskRecord, StoredImage, StoredImageThumbnail } from '../types'
+import type { AgentConversation, ServerImageJobRef, TaskRecord, StoredImage, StoredImageThumbnail } from '../types'
 
 const DB_NAME = 'gpt-image-playground'
-const DB_VERSION = 3
+const DB_VERSION = 4
 const STORE_TASKS = 'tasks'
 const STORE_IMAGES = 'images'
 const STORE_THUMBNAILS = 'thumbnails'
 const STORE_AGENT_CONVERSATIONS = 'agentConversations'
+const STORE_SERVER_IMAGE_JOBS = 'serverImageJobs'
 const THUMBNAIL_MAX_SIZE = 720
 const THUMBNAIL_QUALITY = 0.9
 const THUMBNAIL_VERSION = 2
@@ -28,6 +29,10 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_AGENT_CONVERSATIONS)) {
         db.createObjectStore(STORE_AGENT_CONVERSATIONS, { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(STORE_SERVER_IMAGE_JOBS)) {
+        const store = db.createObjectStore(STORE_SERVER_IMAGE_JOBS, { keyPath: 'id' })
+        store.createIndex('taskId', 'taskId', { unique: false })
       }
     }
     req.onsuccess = () => resolve(req.result)
@@ -62,18 +67,69 @@ export function putTask(task: TaskRecord): Promise<IDBValidKey> {
   return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.put(task))
 }
 
+export function putTaskUnlessPersistedDone(task: TaskRecord): Promise<{ task: TaskRecord; committed: boolean }> {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_TASKS, 'readwrite')
+        const store = tx.objectStore(STORE_TASKS)
+        const req = store.get(task.id)
+        let result = { task, committed: true }
+        req.onsuccess = () => {
+          const persisted = req.result as TaskRecord | undefined
+          if (persisted?.status === 'done' && task.status !== 'done') {
+            result = { task: persisted, committed: false }
+            return
+          }
+          store.put(task)
+        }
+        tx.oncomplete = () => resolve(result)
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      }),
+  )
+}
+
 export function deleteTask(id: string): Promise<undefined> {
-  return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.delete(id))
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction([STORE_TASKS, STORE_SERVER_IMAGE_JOBS], 'readwrite')
+        tx.objectStore(STORE_TASKS).delete(id)
+        const index = tx.objectStore(STORE_SERVER_IMAGE_JOBS).index('taskId')
+        const req = index.openKeyCursor(IDBKeyRange.only(id))
+        req.onsuccess = () => {
+          const cursor = req.result
+          if (!cursor) return
+          tx.objectStore(STORE_SERVER_IMAGE_JOBS).delete(cursor.primaryKey)
+          cursor.continue()
+        }
+        tx.oncomplete = () => resolve(undefined)
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      }),
+  )
 }
 
 export function commitTaskDeletion(deletedTaskIds: string[], updatedTasks: TaskRecord[], updatedConversations: AgentConversation[]): Promise<undefined> {
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
-        const tx = db.transaction([STORE_TASKS, STORE_AGENT_CONVERSATIONS], 'readwrite')
+        const tx = db.transaction([STORE_TASKS, STORE_AGENT_CONVERSATIONS, STORE_SERVER_IMAGE_JOBS], 'readwrite')
         const taskStore = tx.objectStore(STORE_TASKS)
         const conversationStore = tx.objectStore(STORE_AGENT_CONVERSATIONS)
+        const serverJobStore = tx.objectStore(STORE_SERVER_IMAGE_JOBS)
         for (const id of deletedTaskIds) taskStore.delete(id)
+        if (deletedTaskIds.length > 0) {
+          const deletedIds = new Set(deletedTaskIds)
+          const req = serverJobStore.openCursor()
+          req.onsuccess = () => {
+            const cursor = req.result
+            if (!cursor) return
+            if (deletedIds.has((cursor.value as ServerImageJobRef).taskId)) cursor.delete()
+            cursor.continue()
+          }
+        }
         for (const task of updatedTasks) taskStore.put(task)
         for (const conversation of updatedConversations) conversationStore.put(conversation)
         tx.oncomplete = () => resolve(undefined)
@@ -84,7 +140,65 @@ export function commitTaskDeletion(deletedTaskIds: string[], updatedTasks: TaskR
 }
 
 export function clearTasks(): Promise<undefined> {
-  return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.clear())
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction([STORE_TASKS, STORE_SERVER_IMAGE_JOBS], 'readwrite')
+        tx.objectStore(STORE_TASKS).clear()
+        tx.objectStore(STORE_SERVER_IMAGE_JOBS).clear()
+        tx.oncomplete = () => resolve(undefined)
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      }),
+  )
+}
+
+// ===== Server image jobs =====
+
+export function getServerImageJobRefs(taskId: string): Promise<ServerImageJobRef[]> {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_SERVER_IMAGE_JOBS, 'readonly')
+        const req = tx.objectStore(STORE_SERVER_IMAGE_JOBS).index('taskId').getAll(taskId)
+        req.onsuccess = () => resolve(req.result.sort((a, b) => a.requestIndex - b.requestIndex))
+        req.onerror = () => reject(req.error)
+      }),
+  )
+}
+
+export function commitServerImageJobRef(task: TaskRecord, ref: ServerImageJobRef): Promise<undefined> {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction([STORE_TASKS, STORE_SERVER_IMAGE_JOBS], 'readwrite')
+        tx.objectStore(STORE_TASKS).put(task)
+        tx.objectStore(STORE_SERVER_IMAGE_JOBS).put(ref)
+        tx.oncomplete = () => resolve(undefined)
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      }),
+  )
+}
+
+export function deleteServerImageJobRefs(taskId: string): Promise<undefined> {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_SERVER_IMAGE_JOBS, 'readwrite')
+        const store = tx.objectStore(STORE_SERVER_IMAGE_JOBS)
+        const req = store.index('taskId').openKeyCursor(IDBKeyRange.only(taskId))
+        req.onsuccess = () => {
+          const cursor = req.result
+          if (!cursor) return
+          store.delete(cursor.primaryKey)
+          cursor.continue()
+        }
+        tx.oncomplete = () => resolve(undefined)
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      }),
+  )
 }
 
 // ===== Agent conversations =====

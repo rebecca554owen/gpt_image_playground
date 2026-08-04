@@ -1,23 +1,36 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, FOUR_K_IMAGES_MODEL, normalizeSettings } from './lib/apiProfiles'
-import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
+import type { AgentConversation, ExportData, ServerImageJobRef, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
 import { hasActiveDataOperations } from './lib/dataOperations'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
+const dbTestState = vi.hoisted(() => ({
+  putTaskError: null as Error | null,
+  serverJobRefsError: null as Error | null,
+}))
 vi.mock('./lib/db', () => {
   const tasks = new Map<string, TaskRecord>()
   const images = new Map<string, StoredImage>()
   const thumbnails = new Map<string, StoredImageThumbnail>()
   const agentConversations = new Map<string, AgentConversation>()
+  const serverImageJobs = new Map<string, ServerImageJobRef>()
   let imageSeq = 0
 
   return {
     CURRENT_THUMBNAIL_VERSION: 2,
     getAllTasks: async () => [...tasks.values()],
     putTask: async (task: TaskRecord) => {
+      if (dbTestState.putTaskError) throw dbTestState.putTaskError
       tasks.set(task.id, task)
       return task.id
+    },
+    putTaskUnlessPersistedDone: async (task: TaskRecord) => {
+      if (dbTestState.putTaskError) throw dbTestState.putTaskError
+      const persisted = tasks.get(task.id)
+      if (persisted?.status === 'done' && task.status !== 'done') return { task: persisted, committed: false }
+      tasks.set(task.id, task)
+      return { task, committed: true }
     },
     deleteTask: async (id: string) => {
       tasks.delete(id)
@@ -29,6 +42,22 @@ vi.mock('./lib/db', () => {
     },
     clearTasks: async () => {
       tasks.clear()
+      serverImageJobs.clear()
+      dbTestState.putTaskError = null
+      dbTestState.serverJobRefsError = null
+    },
+    getServerImageJobRefs: async (taskId: string) => {
+      if (dbTestState.serverJobRefsError) throw dbTestState.serverJobRefsError
+      return [...serverImageJobs.values()].filter((ref) => ref.taskId === taskId)
+    },
+    commitServerImageJobRef: async (task: TaskRecord, ref: ServerImageJobRef) => {
+      tasks.set(task.id, task)
+      serverImageJobs.set(ref.id, ref)
+    },
+    deleteServerImageJobRefs: async (taskId: string) => {
+      for (const [id, ref] of serverImageJobs) {
+        if (ref.taskId === taskId) serverImageJobs.delete(id)
+      }
     },
     getAllAgentConversations: async () => [...agentConversations.values()],
     putAgentConversation: async (conversation: AgentConversation) => {
@@ -134,11 +163,13 @@ vi.mock('./lib/agentApi', () => ({
     }
   }),
 }))
-import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversations, getAllTasks, getImage, putAgentConversation, putImage, putTask as putDbTask } from './lib/db'
+import { clearAgentConversations, clearImages, clearTasks, commitServerImageJobRef, getAllAgentConversations, getAllTasks, getImage, getServerImageJobRefs, putAgentConversation, putImage, putTask as putDbTask } from './lib/db'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
+import { callImageApi } from './lib/api'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
+import { ServerImageJobRecoverableError, ServerImageJobTerminalError } from './lib/serverImageJobs'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getApiRequestNetworkErrorHint, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, isPotentiallyBillableNetworkDisconnectTask, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, retryTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getApiRequestNetworkErrorHint, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, isPotentiallyBillableNetworkDisconnectTask, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, retryTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -184,6 +215,16 @@ function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
   }
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 function importFile(data: ExportData, files: Record<string, Uint8Array> = {}): File {
   const zipped = zipSync({ ...files, 'manifest.json': strToU8(JSON.stringify(data)) })
   const buffer = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength)
@@ -194,6 +235,7 @@ describe('data operation locking', () => {
   it('detects running and recoverable work before import or export', () => {
     expect(hasActiveDataOperations([task({ status: 'running' })], [])).toBe(true)
     expect(hasActiveDataOperations([task({ falRecoverable: true })], [])).toBe(true)
+    expect(hasActiveDataOperations([task({ serverJobRecoverable: true })], [])).toBe(true)
     expect(hasActiveDataOperations([], [agentConversation({
       rounds: [{
         id: 'round-a',
@@ -619,9 +661,10 @@ describe('interrupted OpenAI running tasks', () => {
     const openAIRunning = task({ id: 'openai-running', apiProvider: 'openai', status: 'running', createdAt: 2_000, finishedAt: null, elapsed: null })
     const falRunning = task({ id: 'fal-running', apiProvider: 'fal', status: 'running', createdAt: 3_000, finishedAt: null, elapsed: null })
     const customAsyncRunning = task({ id: 'custom-running', apiProvider: 'custom-provider', customTaskId: 'task-1', status: 'running', createdAt: 4_000, finishedAt: null, elapsed: null })
+    const serverJobRunning = task({ id: 'server-job-running', apiProvider: 'openai', serverJobIds: ['job-1'], status: 'running', createdAt: 5_000, finishedAt: null, elapsed: null })
     const doneTask = task({ id: 'done-task', apiProvider: 'openai', status: 'done' })
 
-    const result = markInterruptedOpenAIRunningTasks([legacyRunning, openAIRunning, falRunning, customAsyncRunning, doneTask], now)
+    const result = markInterruptedOpenAIRunningTasks([legacyRunning, openAIRunning, falRunning, customAsyncRunning, serverJobRunning, doneTask], now)
 
     expect(result.interruptedTasks.map((item) => item.id)).toEqual(['legacy-running', 'openai-running'])
     expect(result.tasks.find((item) => item.id === 'legacy-running')).toMatchObject({
@@ -638,7 +681,189 @@ describe('interrupted OpenAI running tasks', () => {
     })
     expect(result.tasks.find((item) => item.id === 'fal-running')).toEqual(falRunning)
     expect(result.tasks.find((item) => item.id === 'custom-running')).toEqual(customAsyncRunning)
+    expect(result.tasks.find((item) => item.id === 'server-job-running')).toEqual(serverJobRunning)
     expect(result.tasks.find((item) => item.id === 'done-task')).toEqual(doneTask)
+  })
+})
+
+describe('server image job recovery', () => {
+  const ref = (taskId: string, jobId = `${taskId}-job`): ServerImageJobRef => ({
+    id: `${taskId}:0`,
+    taskId,
+    jobId,
+    token: `${taskId}-token`,
+    requestIndex: 0,
+    createdAt: 1,
+  })
+
+  const recoverableTask = (id: string) => task({
+    id,
+    apiProvider: 'openai',
+    apiProfileId: 'deleted-profile',
+    apiProfileName: 'deleted profile',
+    apiMode: 'responses',
+    apiModel: 'saved-model',
+    inputImageIds: ['deleted-input-image'],
+    serverJobIds: [`${id}-job`],
+    serverJobRecoverable: true,
+    status: 'error',
+    error: '等待恢复',
+    finishedAt: null,
+    elapsed: null,
+  })
+
+  const flushRecovery = async () => {
+    await vi.advanceTimersByTimeAsync(0)
+    for (let i = 0; i < 12; i += 1) await Promise.resolve()
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers()
+    await clearTasks()
+    await clearImages()
+    vi.mocked(callImageApi).mockReset()
+    useStore.setState({
+      settings: normalizeSettings(DEFAULT_SETTINGS),
+      tasks: [],
+      detailTaskId: null,
+    })
+  })
+
+  afterEach(() => {
+    dbTestState.putTaskError = null
+    dbTestState.serverJobRefsError = null
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
+  it('resumes from saved mode and refs after the original profile and input image are gone', async () => {
+    const savedTask = recoverableTask('profile-independent-recovery')
+    await commitServerImageJobRef(savedTask, ref(savedTask.id))
+    const unrelatedFalProfile = createDefaultFalProfile({ id: 'current-fal-profile', apiKey: 'current-key' })
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [unrelatedFalProfile],
+        activeProfileId: unrelatedFalProfile.id,
+      }),
+    })
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,recovered'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+
+    await initStore()
+    await flushRecovery()
+
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      inputImageDataUrls: [],
+      serverImageJobs: [expect.objectContaining({ jobId: `${savedTask.id}-job`, requestIndex: 0 })],
+      settings: expect.objectContaining({ apiMode: 'responses', model: 'saved-model' }),
+    }))
+    expect(useStore.getState().tasks.find((item) => item.id === savedTask.id)).toMatchObject({
+      status: 'done',
+      serverJobIds: undefined,
+      serverJobRecoverable: false,
+    })
+    expect(await getServerImageJobRefs(savedTask.id)).toEqual([])
+  })
+
+  it('keeps refs recoverable when saving the downloaded image result hits local quota', async () => {
+    const savedTask = recoverableTask('quota-recovery')
+    await commitServerImageJobRef(savedTask, ref(savedTask.id))
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,recovered'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+
+    await initStore()
+    dbTestState.putTaskError = new DOMException('Quota exceeded', 'QuotaExceededError')
+    await flushRecovery()
+
+    expect(useStore.getState().tasks.find((item) => item.id === savedTask.id)).toMatchObject({
+      status: 'error',
+      serverJobIds: [`${savedTask.id}-job`],
+      serverJobRecoverable: true,
+    })
+    dbTestState.putTaskError = null
+    expect(await getServerImageJobRefs(savedTask.id)).toHaveLength(1)
+  })
+
+  it('does not reinterpret a stored upstream 504 as a recoverable browser timeout', async () => {
+    const savedTask = recoverableTask('terminal-timeout')
+    await commitServerImageJobRef(savedTask, ref(savedTask.id))
+    vi.mocked(callImageApi).mockRejectedValueOnce(new ServerImageJobTerminalError('status_code=504, upstream timeout'))
+
+    await initStore()
+    await flushRecovery()
+
+    expect(useStore.getState().tasks.find((item) => item.id === savedTask.id)).toMatchObject({
+      status: 'error',
+      error: expect.stringContaining('504'),
+      serverJobIds: undefined,
+      serverJobRecoverable: false,
+    })
+    expect(await getServerImageJobRefs(savedTask.id)).toEqual([])
+  })
+
+  it('keeps the original task pending when IndexedDB cannot read its query credentials', async () => {
+    const savedTask = recoverableTask('refs-read-error')
+    await commitServerImageJobRef(savedTask, ref(savedTask.id))
+
+    await initStore()
+    dbTestState.serverJobRefsError = new Error('IndexedDB unavailable')
+    await flushRecovery()
+
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks.find((item) => item.id === savedTask.id)).toMatchObject({
+      status: 'error',
+      serverJobIds: [`${savedTask.id}-job`],
+      serverJobRecoverable: true,
+    })
+  })
+
+  it('does not overwrite a task another tab already persisted as done', async () => {
+    const savedTask = recoverableTask('multi-tab-done')
+    await commitServerImageJobRef(savedTask, ref(savedTask.id))
+    const pending = createDeferred<Awaited<ReturnType<typeof callImageApi>>>()
+    vi.mocked(callImageApi).mockReturnValueOnce(pending.promise)
+
+    await initStore()
+    await flushRecovery()
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+
+    const completedElsewhere = {
+      ...savedTask,
+      outputImages: ['other-tab-image'],
+      status: 'done' as const,
+      error: null,
+      serverJobIds: undefined,
+      serverJobRecoverable: false,
+      finishedAt: 10,
+      elapsed: 9,
+    }
+    await putDbTask(completedElsewhere)
+    pending.reject(new ServerImageJobRecoverableError('Load failed'))
+    for (let i = 0; i < 12; i += 1) await Promise.resolve()
+
+    expect(useStore.getState().tasks.find((item) => item.id === savedTask.id)).toEqual(completedElsewhere)
+    expect(await getServerImageJobRefs(savedTask.id)).toHaveLength(1)
+  })
+
+  it('cancels a scheduled server-job recovery when the task is deleted', async () => {
+    const savedTask = recoverableTask('deleted-before-recovery')
+    await commitServerImageJobRef(savedTask, ref(savedTask.id))
+
+    await initStore()
+    await removeMultipleTasks([savedTask.id])
+    await flushRecovery()
+
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks.some((item) => item.id === savedTask.id)).toBe(false)
   })
 })
 
