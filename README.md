@@ -178,11 +178,13 @@ Docker 部署支持在运行时注入默认配置。
 - `DEFAULT_API_URL`：设置页面上默认显示的 API 地址（如 `https://api.openai.com/v1`）。也支持填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL 来导入自定义服务商配置，以及通过 URL 查询参数预设默认配置。
 - `API_PROXY_URL`：配置内置代理实际转发到的完整 API 基础地址（仅开启代理时有效）。代理不会自动补 `/v1`，OpenAI 兼容接口通常必须填写到版本前缀，如 `https://api.openai.com/v1`。
 - `ENABLE_API_PROXY`：设为 `true` 开启容器内置 Nginx 同源代理，用于解决浏览器跨域（CORS）限制。开启后，前端 **API 代理** 开关默认开启，浏览器会请求同源的 `/api-proxy/{接口相对路径}`，再由 Nginx 拼接到 `API_PROXY_URL` 后转发；用户仍可在设置中手动关闭。
-- `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。
-- `ENABLE_IMAGE_JOBS`：与 `ENABLE_API_PROXY=true` 一起使用时，将内置 OpenAI Images、Edits 和 Responses 请求交给独立任务服务。浏览器断网、切后台或刷新后会继续查询同一个服务端任务，不会自动重新提交。
+- `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。保持为 `false` 时，用户可以关闭代理；点击推荐站点会同时切换到对应区域直连。
+- `ENABLE_IMAGE_JOBS`：与 `ENABLE_API_PROXY=true` 一起使用时，将内置 OpenAI Images、Edits 和 Responses 请求交给独立任务服务。浏览器断网、切后台或刷新后会继续查询同一个服务端任务，不会创建新的任务。
 - `IMAGE_JOB_PROXY_URL`：任务服务的容器内地址，默认 `http://image-task-proxy:3001`。任务服务不应映射公网端口。
 - `IMAGE_JOB_ENCRYPTION_KEY_FILE`：任务服务读取 32 字节加密密钥的 secret 文件路径。生产环境应使用 Compose secret 挂载到 `/run/secrets/`，不要把密钥放进环境变量、Compose 文件或 Git。
 - `IMAGE_JOB_TRUST_PROXY_CIDRS`：允许提供真实客户端 IP 的可信代理网段。完整示例仅信任回环地址和 Docker 私网，并要求站点端口只绑定宿主机 `127.0.0.1`。
+- `IMAGE_JOB_MAX_ATTEMPTS`：同一任务向上游发送的最大次数，默认 `2`、最大 `3`。仅对 408、425、429、500、502、503、504、网络/超时错误，以及上游明确返回的 `image_stream_timeout` / `upstream_timeout` 错误码重试；普通 400、401、403、404 和 `image_unsafe` 等安全审核结果不会重试。
+- `IMAGE_JOB_RETRY_BASE_DELAY_MS` / `IMAGE_JOB_RETRY_MAX_DELAY_MS`：重试退避的基础和最大等待时间，默认 `2000` / `60000` 毫秒；上游返回 `Retry-After` 时会在最大值内优先遵循。
 - `SHOW_DEFAULT_CONFIG_ONLY`：设为 `true` 后，如果已配置默认 API URL 或默认代理，前端会禁用“当前配置”和“服务商类型”的下拉切换，只允许使用默认配置和默认服务商类型。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
 - `HOST` / `PORT`：指定容器内 Nginx 监听的地址和端口（默认 `0.0.0.0:80`）。
 
@@ -253,6 +255,9 @@ services:
       IMAGE_JOB_UPSTREAM_URL: ${API_PROXY_URL}
       IMAGE_JOB_ENCRYPTION_KEY_FILE: /run/secrets/image_job_encryption_key
       IMAGE_JOB_TRUST_PROXY_CIDRS: 127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      IMAGE_JOB_MAX_ATTEMPTS: ${IMAGE_JOB_MAX_ATTEMPTS:-2}
+      IMAGE_JOB_RETRY_BASE_DELAY_MS: ${IMAGE_JOB_RETRY_BASE_DELAY_MS:-2000}
+      IMAGE_JOB_RETRY_MAX_DELAY_MS: ${IMAGE_JOB_RETRY_MAX_DELAY_MS:-60000}
     secrets:
       - image_job_encryption_key
     volumes:
@@ -266,7 +271,7 @@ services:
       DEFAULT_API_URL: ${DEFAULT_API_URL:-https://api.llm-token.cn/v1}
       API_PROXY_URL: ${API_PROXY_URL}
       ENABLE_API_PROXY: 'true'
-      LOCK_API_PROXY: 'true'
+      LOCK_API_PROXY: ${LOCK_API_PROXY:-false}
       ENABLE_IMAGE_JOBS: 'true'
       IMAGE_JOB_PROXY_URL: http://image-task-proxy:3001
     ports:
@@ -298,7 +303,9 @@ docker compose -f deploy/docker-compose.image-jobs.yml up -d
 
 任务请求、API Key 和结果使用该密钥加密写入独立 volume；SQLite 和日志不保存这些明文。任务服务只允许固定的 `images/generations`、`images/edits` 和 `responses` 路径。请长期保留同一密钥文件；丢失或擅自轮换密钥会导致尚未取回的任务数据无法解密。
 
-任务已经进入上游后，服务不会因浏览器断线自动重提。若任务服务异常重启且无法确认上游结果，任务会显示为“状态未知”，由用户核对账户记录后决定是否重新生成，避免潜在的重复扣费。发布时应保留任务 volume，并为任务服务提供不少于 21 分钟的优雅退出时间。
+浏览器断线不会创建新任务；上传请求中断时，前端只有在确认相同任务 ID 尚未落库、请求尚未进入上游后才重传一次。同一个服务端任务只会对临时 HTTP 错误、上游图片流超时错误码或网络/超时错误执行有限重试，并在每次请求中发送稳定的 `Idempotency-Key`。这能降低重复处理风险，但兼容上游可能忽略幂等键，因此网络超时后的重试仍无法绝对保证不重复计费。普通 400 参数错误、401 鉴权错误、403 审核拒绝等确定性错误不会重试。
+
+若任务服务异常重启且无法确认上游结果，任务会显示为“状态未知”，不会在启动后自动重提，由用户核对账户记录后决定是否重新生成。发布时应保留任务 volume；默认两次、每次最长 20 分钟时，应为任务服务提供不少于 41 分钟的优雅退出时间。
 
 **更新说明：**
 

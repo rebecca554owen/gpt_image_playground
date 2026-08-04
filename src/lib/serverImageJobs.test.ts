@@ -75,6 +75,41 @@ describe('server image jobs', () => {
     expect(putCount).toBe(1)
   })
 
+  it('retries an interrupted upload once only after the same job id is confirmed absent', async () => {
+    const putUrls: string[] = []
+    const putBodies: BodyInit[] = []
+    let putCount = 0
+    let stateCount = 0
+    const body = new FormData()
+    body.append('prompt', 'same-upload')
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'PUT') {
+        putCount += 1
+        putUrls.push(url)
+        putBodies.push(init.body!)
+        if (putCount === 1) return new Response(null, { status: 400 })
+        return new Response(null, { status: 202 })
+      }
+      if (url.endsWith('/result')) return new Response('uploaded-result', { status: 200 })
+      stateCount += 1
+      if (stateCount === 1) return new Response(null, { status: 404 })
+      return Response.json({ id: 'job-1', status: 'succeeded', hasResult: true })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchWithServerImageJob } = await loadModule()
+
+    const response = await fetchWithServerImageJob('/api-proxy/images/edits', {
+      method: 'POST',
+      body,
+    }, { pollIntervalMs: 0 })
+
+    expect(await response.text()).toBe('uploaded-result')
+    expect(putCount).toBe(2)
+    expect(putUrls[0]).toBe(putUrls[1])
+    expect(putBodies).toEqual([body, body])
+  })
+
   it('resumes an existing job without submitting the upstream request again', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

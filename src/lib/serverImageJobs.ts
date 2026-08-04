@@ -152,6 +152,9 @@ async function createJobHttpError(response: Response, fallback: string, submitti
   if (submitting && error.code && SAFE_UNSUBMITTED_ERROR_CODES.has(error.code)) {
     return new ServerImageJobTerminalError(error.message)
   }
+  if (submitting && response.status === 400 && !error.code) {
+    return new ServerImageJobRecoverableError(error.message)
+  }
   if (isRecoverableStatus(response.status)) return new ServerImageJobRecoverableError(error.message)
   return new ServerImageJobTerminalError(error.message)
 }
@@ -257,13 +260,18 @@ export async function fetchWithServerImageJob(
 
   if (!existingRef) {
     await options.onJobCreated?.(ref)
-    try {
-      await submitJob(upstreamPath!, ref, init, signal)
-    } catch (err) {
-      if (isServerImageJobTerminalError(err)) throw err
-      if (signal?.aborted) throw createJobNetworkError(err, '任务提交已中断，可稍后继续查看原任务。')
-      const existing = await readJobState(ref, signal)
-      if (!existing) throw createJobNetworkError(err, '任务提交结果无法确认，可稍后继续查看原任务。')
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        await submitJob(upstreamPath!, ref, init, signal)
+        break
+      } catch (err) {
+        if (isServerImageJobTerminalError(err)) throw err
+        if (signal?.aborted) throw createJobNetworkError(err, '任务提交已中断，可稍后继续查看原任务。')
+        const existing = await readJobState(ref, signal)
+        if (existing) break
+        if (attempt === 2) throw createJobNetworkError(err, '任务提交结果无法确认，可稍后继续查看原任务。')
+        await sleep(pollIntervalMs, signal)
+      }
     }
   }
 

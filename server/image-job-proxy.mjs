@@ -14,6 +14,14 @@ const ALLOWED_UPSTREAM_PATHS = new Set([
   'responses',
 ])
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'unknown'])
+const RETRYABLE_UPSTREAM_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
+const RETRYABLE_UPSTREAM_ERROR_CODES = new Set(['image_stream_timeout', 'upstream_timeout'])
+const NON_RETRYABLE_UPSTREAM_MARKERS = [
+  'content_policy_violation',
+  'image_unsafe',
+  'moderation_blocked',
+  'safety_violations',
+]
 const ENCRYPTED_FILE_HEADER = Buffer.from('IJ01')
 const ENCRYPTED_FILE_HEADER_BYTES = ENCRYPTED_FILE_HEADER.length + 12
 const AUTH_TAG_BYTES = 16
@@ -118,6 +126,17 @@ const safeRequestId = (value) => {
 }
 
 const toIso = (value) => value ? new Date(value).toISOString() : null
+
+const parseRetryAfterMs = (value) => {
+  if (!value) return null
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000)
+  const timestamp = Date.parse(value)
+  if (Number.isNaN(timestamp)) return null
+  return Math.max(0, timestamp - Date.now())
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const isSameDigest = (left, right) => {
   if (!left || !right || left.length !== right.length) return false
@@ -274,12 +293,18 @@ export const createImageJobProxy = (options = {}) => {
     maxBodyBytes: readInteger(env.IMAGE_JOB_MAX_BODY_BYTES, 600 * 1024 * 1024, 1, Number.MAX_SAFE_INTEGER),
     maxConcurrency: readInteger(env.IMAGE_JOB_MAX_CONCURRENCY, 4, 1, 128),
     maxQueue: readInteger(env.IMAGE_JOB_MAX_QUEUE, 100, 1, 100_000),
+    maxAttempts: readInteger(env.IMAGE_JOB_MAX_ATTEMPTS, 2, 1, 3),
     maxResultBytes: readInteger(env.IMAGE_JOB_MAX_RESULT_BYTES, 600 * 1024 * 1024, 1, Number.MAX_SAFE_INTEGER),
     maxWaitersPerJob: readInteger(env.IMAGE_JOB_MAX_WAITERS_PER_JOB, 4, 1, 100),
     port: readInteger(env.IMAGE_JOB_PORT, 3001, 0, 65_535),
+    retryBaseDelayMs: readInteger(env.IMAGE_JOB_RETRY_BASE_DELAY_MS, 2_000, 0, 60_000),
+    retryMaxDelayMs: readInteger(env.IMAGE_JOB_RETRY_MAX_DELAY_MS, 60_000, 0, 300_000),
     successTtlMs: readInteger(env.IMAGE_JOB_SUCCESS_TTL_MS, 24 * 60 * 60 * 1000, 1_000, 365 * 24 * 60 * 60 * 1000),
     trustedProxyCidrs: parseTrustedProxyCidrs(env.IMAGE_JOB_TRUST_PROXY_CIDRS),
     upstreamTimeoutMs: readInteger(env.IMAGE_JOB_UPSTREAM_TIMEOUT_MS, 1_200_000, 100, 1_200_000),
+  }
+  if (config.retryBaseDelayMs > config.retryMaxDelayMs) {
+    throw new Error('IMAGE_JOB_RETRY_BASE_DELAY_MS must not exceed IMAGE_JOB_RETRY_MAX_DELAY_MS')
   }
   const logger = options.logger || ((entry) => process.stdout.write(`${JSON.stringify(entry)}\n`))
 
@@ -310,12 +335,16 @@ export const createImageJobProxy = (options = {}) => {
       result_meta_file TEXT,
       result_size INTEGER,
       result_digest TEXT,
-      error_code TEXT
+      error_code TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at);
     CREATE INDEX IF NOT EXISTS jobs_auth_status_idx ON jobs(auth_digest, status);
     CREATE INDEX IF NOT EXISTS jobs_ip_status_idx ON jobs(ip_digest, status);
   `)
+  if (!db.prepare('PRAGMA table_info(jobs)').all().some((column) => column.name === 'attempt_count')) {
+    db.exec('ALTER TABLE jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0')
+  }
 
   const hmac = (purpose, value) => createHmac('sha256', key).update(purpose).update('\0').update(value).digest('hex')
   const filePath = (name) => path.join(dataDir, name)
@@ -334,6 +363,7 @@ export const createImageJobProxy = (options = {}) => {
   let running = 0
   let pumping = false
   let closing = false
+  let forceClosing = false
   let cleanupTimer
   let reservedDiskBytes = 0
 
@@ -382,6 +412,10 @@ export const createImageJobProxy = (options = {}) => {
         durationMs: entry.durationMs ?? null,
         httpStatus: entry.httpStatus ?? null,
         upstreamRequestId: safeRequestId(entry.upstreamRequestId),
+        attempt: entry.attempt ?? null,
+        maxAttempts: entry.maxAttempts ?? null,
+        retryReason: entry.retryReason ?? null,
+        retryDelayMs: entry.retryDelayMs ?? null,
       })
     } catch {}
   }
@@ -392,6 +426,8 @@ export const createImageJobProxy = (options = {}) => {
     hasResult: Boolean(row.result_file),
     upstreamStatus: row.upstream_status ?? null,
     error: row.error_code ?? null,
+    attemptCount: row.attempt_count ?? 0,
+    maxAttempts: config.maxAttempts,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
     startedAt: toIso(row.started_at),
@@ -465,12 +501,7 @@ export const createImageJobProxy = (options = {}) => {
 
     const row = rowForId.get(id)
     let startedAt = reservedAt
-    let controller
-    let timedOut = false
-    let timeout
     let dispatched = false
-    let resultTemp
-    let resultMetaTemp
 
     try {
       const forwarded = await readEncryptedJson(row.headers_file, key)
@@ -478,6 +509,7 @@ export const createImageJobProxy = (options = {}) => {
       const headers = {
         authorization: forwarded.authorization,
         'content-length': String(row.request_size),
+        'idempotency-key': `image-job-${hmac('idempotency-key', id)}`,
       }
       if (forwarded.accept) headers.accept = forwarded.accept
       if (forwarded.contentType) headers['content-type'] = forwarded.contentType
@@ -487,105 +519,210 @@ export const createImageJobProxy = (options = {}) => {
         UPDATE jobs SET status = 'running', updated_at = ?, started_at = ?
         WHERE id = ? AND status = 'dispatch_reserved'
       `).run(startedAt, startedAt, id))
-      controller = new AbortController()
-      dispatchControllers.set(id, controller)
-      timeout = setTimeout(() => {
-        timedOut = true
-        controller.abort()
-      }, config.upstreamTimeoutMs)
-      timeout.unref()
-      dispatched = true
-      const response = await fetch(target, {
-        method: 'POST',
-        headers,
-        body: createDecryptedStream(row.request_file, key),
-        duplex: 'half',
-        redirect: 'manual',
-        signal: controller.signal,
-      })
-      const upstreamRequestId = safeRequestId(
-        response.headers.get('x-request-id')
-          || response.headers.get('request-id')
-          || response.headers.get('openai-request-id'),
-      )
-      const rawContentType = response.headers.get('content-type') || 'application/octet-stream'
-      const contentType = /^[\x20-\x7e]{1,1024}$/.test(rawContentType)
-        ? rawContentType
-        : 'application/octet-stream'
-      const stem = jobFileStem(id)
-      const resultFile = filePath(`${stem}.result.enc`)
-      const resultMetaFile = filePath(`${stem}.result-meta.enc`)
-      resultTemp = resultFile
-      resultMetaTemp = resultMetaFile
-      protectedFiles.add(resultFile)
-      protectedFiles.add(resultMetaFile)
-      const resultLengthHeader = response.headers.get('content-length')
-      const resultLength = resultLengthHeader && /^\d+$/.test(resultLengthHeader)
-        ? Number(resultLengthHeader)
-        : null
-      if (resultLength !== null && (!Number.isSafeInteger(resultLength) || resultLength > config.maxResultBytes)) {
-        throw new HttpError(413, 'body_too_large')
+      for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+        const attemptStartedAt = Date.now()
+        const controller = new AbortController()
+        let timedOut = false
+        let receivedResponse = false
+        let resultTemp
+        let resultMetaTemp
+        const timeout = setTimeout(() => {
+          timedOut = true
+          controller.abort()
+        }, config.upstreamTimeoutMs)
+        timeout.unref()
+        dispatchControllers.set(id, controller)
+        transact(() => db.prepare(`
+          UPDATE jobs SET attempt_count = ?, updated_at = ?, upstream_status = NULL
+          WHERE id = ? AND status = 'running'
+        `).run(attempt, attemptStartedAt, id))
+
+        try {
+          dispatched = true
+          const response = await fetch(target, {
+            method: 'POST',
+            headers,
+            body: createDecryptedStream(row.request_file, key),
+            duplex: 'half',
+            redirect: 'manual',
+            signal: controller.signal,
+          })
+          receivedResponse = true
+          const upstreamRequestId = safeRequestId(
+            response.headers.get('x-request-id')
+              || response.headers.get('request-id')
+              || response.headers.get('openai-request-id'),
+          )
+          const rawContentType = response.headers.get('content-type') || 'application/octet-stream'
+          const contentType = /^[\x20-\x7e]{1,1024}$/.test(rawContentType)
+            ? rawContentType
+            : 'application/octet-stream'
+          const stem = jobFileStem(id)
+          const resultFile = filePath(`${stem}.result.enc`)
+          const resultMetaFile = filePath(`${stem}.result-meta.enc`)
+          resultTemp = resultFile
+          resultMetaTemp = resultMetaFile
+          protectedFiles.add(resultFile)
+          protectedFiles.add(resultMetaFile)
+          const resultLengthHeader = response.headers.get('content-length')
+          const resultLength = resultLengthHeader && /^\d+$/.test(resultLengthHeader)
+            ? Number(resultLengthHeader)
+            : null
+          if (resultLength !== null && (!Number.isSafeInteger(resultLength) || resultLength > config.maxResultBytes)) {
+            throw new HttpError(413, 'body_too_large')
+          }
+          const result = await writeEncryptedStream({
+            readable: response.body ? Readable.fromWeb(response.body) : Readable.from([]),
+            target: resultFile,
+            key,
+            maxBytes: config.maxResultBytes,
+            checkDisk,
+            reserveDisk,
+            protectedFiles,
+            expectedBytes: resultLength ?? config.maxResultBytes,
+          })
+          let upstreamErrorCode
+          let hasNonRetryableMarker = false
+          if (!response.ok && result.size <= 64 * 1024 && contentType.toLowerCase().includes('json')) {
+            try {
+              const payload = await readEncryptedJson(resultFile, key)
+              const code = payload?.error?.code
+                ?? payload?.error?.error_code
+                ?? payload?.error_code
+                ?? payload?.code
+              upstreamErrorCode = typeof code === 'string' ? code : undefined
+              const serialized = JSON.stringify(payload).toLowerCase()
+              hasNonRetryableMarker = NON_RETRYABLE_UPSTREAM_MARKERS.some((marker) => serialized.includes(marker))
+            } catch {}
+          }
+          const shouldRetryResponse = !hasNonRetryableMarker && (
+            RETRYABLE_UPSTREAM_STATUSES.has(response.status)
+            || Boolean(upstreamErrorCode && RETRYABLE_UPSTREAM_ERROR_CODES.has(upstreamErrorCode))
+          )
+          if (shouldRetryResponse && attempt < config.maxAttempts) {
+            const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
+            const retryDelayMs = Math.min(
+              config.retryMaxDelayMs,
+              retryAfterMs ?? config.retryBaseDelayMs * (2 ** (attempt - 1)),
+            )
+            removeFileQuietly(resultFile)
+            transact(() => db.prepare(`
+              UPDATE jobs SET updated_at = ?, upstream_status = ?
+              WHERE id = ? AND status = 'running'
+            `).run(Date.now(), response.status, id))
+            logJob({
+              jobId: id,
+              status: 'retrying',
+              durationMs: Date.now() - attemptStartedAt,
+              httpStatus: response.status,
+              upstreamRequestId,
+              attempt,
+              maxAttempts: config.maxAttempts,
+              retryReason: upstreamErrorCode && RETRYABLE_UPSTREAM_ERROR_CODES.has(upstreamErrorCode)
+                ? `upstream_${upstreamErrorCode}`
+                : 'upstream_http_error',
+              retryDelayMs,
+            })
+            if (retryDelayMs > 0) await wait(retryDelayMs)
+            if (forceClosing) return
+            continue
+          }
+          await writeEncryptedBuffer({
+            target: resultMetaFile,
+            key,
+            checkDisk,
+            reserveDisk,
+            protectedFiles,
+          }, Buffer.from(JSON.stringify({ contentType, upstreamRequestId })))
+          const finishedAt = Date.now()
+          const finalStatus = response.ok ? 'succeeded' : 'failed'
+          const errorCode = response.ok ? null : 'upstream_http_error'
+          transact(() => db.prepare(`
+            UPDATE jobs
+            SET status = ?, updated_at = ?, finished_at = ?, upstream_status = ?,
+                result_file = ?, result_meta_file = ?, result_size = ?, result_digest = ?, error_code = ?,
+                request_file = NULL, headers_file = NULL
+            WHERE id = ? AND status = 'running'
+          `).run(
+            finalStatus,
+            finishedAt,
+            finishedAt,
+            response.status,
+            resultFile,
+            resultMetaFile,
+            result.size,
+            result.digest,
+            errorCode,
+            id,
+          ))
+          removeInputFiles(row)
+          logJob({
+            jobId: id,
+            status: finalStatus,
+            durationMs: finishedAt - startedAt,
+            httpStatus: response.status,
+            upstreamRequestId,
+            attempt,
+            maxAttempts: config.maxAttempts,
+          })
+          return
+        } catch (err) {
+          if (resultTemp) removeFileQuietly(resultTemp)
+          if (resultMetaTemp) removeFileQuietly(resultMetaTemp)
+          if (forceClosing) return
+          const isLocalResultError = err instanceof HttpError && ['body_too_large', 'disk_watermark_reached'].includes(err.code)
+          if (!receivedResponse && !isLocalResultError && attempt < config.maxAttempts) {
+            const retryDelayMs = Math.min(config.retryMaxDelayMs, config.retryBaseDelayMs * (2 ** (attempt - 1)))
+            logJob({
+              jobId: id,
+              status: 'retrying',
+              durationMs: Date.now() - attemptStartedAt,
+              attempt,
+              maxAttempts: config.maxAttempts,
+              retryReason: timedOut ? 'upstream_timeout' : 'upstream_network',
+              retryDelayMs,
+            })
+            if (retryDelayMs > 0) await wait(retryDelayMs)
+            if (forceClosing) return
+            continue
+          }
+
+          const finishedAt = Date.now()
+          const errorCode = timedOut
+            ? 'outcome_unknown_upstream_timeout'
+            : err instanceof HttpError && err.code === 'body_too_large'
+              ? 'outcome_unknown_response_too_large'
+              : err instanceof HttpError && err.code === 'disk_watermark_reached'
+                ? 'outcome_unknown_result_storage_full'
+                : 'outcome_unknown_upstream_network'
+          transact(() => db.prepare(`
+            UPDATE jobs
+            SET status = 'unknown', updated_at = ?, finished_at = ?, error_code = ?,
+                request_file = NULL, headers_file = NULL
+            WHERE id = ? AND status = 'running'
+          `).run(finishedAt, finishedAt, errorCode, id))
+          removeInputFiles(row)
+          logJob({
+            jobId: id,
+            status: 'unknown',
+            durationMs: finishedAt - startedAt,
+            attempt,
+            maxAttempts: config.maxAttempts,
+          })
+          return
+        } finally {
+          clearTimeout(timeout)
+          dispatchControllers.delete(id)
+          if (resultTemp) protectedFiles.delete(resultTemp)
+          if (resultMetaTemp) protectedFiles.delete(resultMetaTemp)
+        }
       }
-      const result = await writeEncryptedStream({
-        readable: response.body ? Readable.fromWeb(response.body) : Readable.from([]),
-        target: resultFile,
-        key,
-        maxBytes: config.maxResultBytes,
-        checkDisk,
-        reserveDisk,
-        protectedFiles,
-        expectedBytes: resultLength ?? config.maxResultBytes,
-      })
-      await writeEncryptedBuffer({
-        target: resultMetaFile,
-        key,
-        checkDisk,
-        reserveDisk,
-        protectedFiles,
-      }, Buffer.from(JSON.stringify({ contentType, upstreamRequestId })))
-      const finishedAt = Date.now()
-      const finalStatus = response.ok ? 'succeeded' : 'failed'
-      const errorCode = response.ok ? null : 'upstream_http_error'
-      transact(() => db.prepare(`
-        UPDATE jobs
-        SET status = ?, updated_at = ?, finished_at = ?, upstream_status = ?,
-            result_file = ?, result_meta_file = ?, result_size = ?, result_digest = ?, error_code = ?,
-            request_file = NULL, headers_file = NULL
-        WHERE id = ? AND status = 'running'
-      `).run(
-        finalStatus,
-        finishedAt,
-        finishedAt,
-        response.status,
-        resultFile,
-        resultMetaFile,
-        result.size,
-        result.digest,
-        errorCode,
-        id,
-      ))
-      removeInputFiles(row)
-      logJob({
-        jobId: id,
-        status: finalStatus,
-        durationMs: finishedAt - startedAt,
-        httpStatus: response.status,
-        upstreamRequestId,
-      })
     } catch (err) {
-      if (resultTemp) removeFileQuietly(resultTemp)
-      if (resultMetaTemp) removeFileQuietly(resultMetaTemp)
-      if (closing) return
+      if (forceClosing) return
       const finishedAt = Date.now()
       const finalStatus = dispatched ? 'unknown' : 'failed'
       const errorCode = dispatched
-        ? timedOut
-          ? 'outcome_unknown_upstream_timeout'
-          : err instanceof HttpError && err.code === 'body_too_large'
-            ? 'outcome_unknown_response_too_large'
-            : err instanceof HttpError && err.code === 'disk_watermark_reached'
-              ? 'outcome_unknown_result_storage_full'
-              : 'outcome_unknown_upstream_network'
+        ? 'outcome_unknown_upstream_network'
         : 'request_storage_error'
       transact(() => db.prepare(`
         UPDATE jobs
@@ -599,11 +736,6 @@ export const createImageJobProxy = (options = {}) => {
         status: finalStatus,
         durationMs: finishedAt - startedAt,
       })
-    } finally {
-      if (timeout) clearTimeout(timeout)
-      dispatchControllers.delete(id)
-      if (resultTemp) protectedFiles.delete(resultTemp)
-      if (resultMetaTemp) protectedFiles.delete(resultMetaTemp)
     }
   }
 
@@ -917,6 +1049,7 @@ export const createImageJobProxy = (options = {}) => {
     if (cleanupTimer) clearInterval(cleanupTimer)
     await new Promise((resolve) => server.close(() => resolve()))
     if (force) {
+      forceClosing = true
       for (const controller of dispatchControllers.values()) controller.abort()
     }
     await Promise.allSettled([...dispatchPromises])

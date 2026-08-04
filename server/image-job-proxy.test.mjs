@@ -43,6 +43,8 @@ const createFixture = async (handler, overrides = {}, customLogger) => {
     IMAGE_JOB_MAX_QUEUE: '100',
     IMAGE_JOB_MAX_RESULT_BYTES: String(4 * 1024 * 1024),
     IMAGE_JOB_PORT: '0',
+    IMAGE_JOB_RETRY_BASE_DELAY_MS: '1',
+    IMAGE_JOB_RETRY_MAX_DELAY_MS: '5',
     IMAGE_JOB_SUCCESS_TTL_MS: '60000',
     IMAGE_JOB_UPSTREAM_TIMEOUT_MS: '5000',
     IMAGE_JOB_UPSTREAM_URL: `http://127.0.0.1:${upstreamAddress.port}/v1`,
@@ -350,7 +352,7 @@ test('正常关闭会停止接单并等待已派发任务完成', async () => {
   db.close()
 })
 
-test('上游超时进入 unknown、不自动重提并立即清理请求与凭据', async () => {
+test('重试预算为一次时上游超时进入 unknown 并立即清理请求与凭据', async () => {
   let upstreamCalls = 0
   const fixture = await createFixture(async (req, res) => {
     upstreamCalls += 1
@@ -360,7 +362,10 @@ test('上游超时进入 unknown、不自动重提并立即清理请求与凭据
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end('{}')
     }
-  }, { IMAGE_JOB_UPSTREAM_TIMEOUT_MS: '100' })
+  }, {
+    IMAGE_JOB_MAX_ATTEMPTS: '1',
+    IMAGE_JOB_UPSTREAM_TIMEOUT_MS: '100',
+  })
   const id = randomUUID()
   const token = randomUUID()
   assert.equal((await putJob(fixture, { id, token })).status, 202)
@@ -404,6 +409,151 @@ test('logger 抛错不会破坏已提交的成功结果', async () => {
   assert.deepEqual(Buffer.from(await result.arrayBuffer()), expected)
 })
 
+test('临时 HTTP 错误在同一任务内重试并复用请求体和幂等键', async () => {
+  const bodies = []
+  const idempotencyKeys = []
+  let upstreamCalls = 0
+  const fixture = await createFixture(async (req, res) => {
+    upstreamCalls += 1
+    bodies.push((await readRequest(req)).toString('utf8'))
+    idempotencyKeys.push(req.headers['idempotency-key'])
+    if (upstreamCalls === 1) {
+      res.writeHead(502, { 'content-type': 'application/json', 'x-request-id': 'req-retry-first' })
+      res.end('{"error":"temporary"}')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json', 'x-request-id': 'req-retry-success' })
+    res.end('{"data":[{"b64_json":"result"}]}')
+  })
+  const id = randomUUID()
+  const token = randomUUID()
+  const body = '{"prompt":"same-request"}'
+  assert.equal((await putJob(fixture, { id, token, body })).status, 202)
+
+  const job = await waitForTerminal(fixture, id, token)
+  assert.equal(job.status, 'succeeded')
+  assert.equal(job.attemptCount, 2)
+  assert.equal(job.maxAttempts, 2)
+  assert.equal(upstreamCalls, 2)
+  assert.deepEqual(bodies, [body, body])
+  assert.equal(idempotencyKeys[0], idempotencyKeys[1])
+  assert.match(idempotencyKeys[0], /^image-job-[a-f0-9]{64}$/)
+  assert.equal(fixture.logs.find((entry) => entry.status === 'retrying')?.httpStatus, 502)
+})
+
+test('上游未返回响应时重试一次并取回最终结果', async () => {
+  let upstreamCalls = 0
+  const fixture = await createFixture(async (req, res) => {
+    upstreamCalls += 1
+    await readRequest(req)
+    if (upstreamCalls === 1) {
+      req.socket.destroy()
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"ok":true}')
+  })
+  const id = randomUUID()
+  const token = randomUUID()
+  assert.equal((await putJob(fixture, { id, token })).status, 202)
+
+  const job = await waitForTerminal(fixture, id, token)
+  assert.equal(job.status, 'succeeded')
+  assert.equal(job.attemptCount, 2)
+  assert.equal(upstreamCalls, 2)
+  assert.equal(fixture.logs.find((entry) => entry.status === 'retrying')?.retryReason, 'upstream_network')
+})
+
+test('上游首次超时后在同一任务内重试成功', async () => {
+  let upstreamCalls = 0
+  const fixture = await createFixture(async (req, res) => {
+    const call = ++upstreamCalls
+    await readRequest(req)
+    if (call === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      if (!res.destroyed) res.end('{"late":true}')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"ok":true}')
+  }, { IMAGE_JOB_UPSTREAM_TIMEOUT_MS: '100' })
+  const id = randomUUID()
+  const token = randomUUID()
+  assert.equal((await putJob(fixture, { id, token })).status, 202)
+
+  const job = await waitForTerminal(fixture, id, token)
+  assert.equal(job.status, 'succeeded')
+  assert.equal(job.attemptCount, 2)
+  assert.equal(upstreamCalls, 2)
+  assert.equal(fixture.logs.find((entry) => entry.status === 'retrying')?.retryReason, 'upstream_timeout')
+})
+
+test('400、401 和 403 确定性错误不会重试', async () => {
+  for (const status of [400, 401, 403]) {
+    let upstreamCalls = 0
+    const fixture = await createFixture(async (req, res) => {
+      upstreamCalls += 1
+      await readRequest(req)
+      res.writeHead(status, { 'content-type': 'application/json' })
+      res.end('{"error":"terminal"}')
+    }, { IMAGE_JOB_MAX_ATTEMPTS: '3' })
+    const id = randomUUID()
+    const token = randomUUID()
+    assert.equal((await putJob(fixture, { id, token })).status, 202)
+    const job = await waitForTerminal(fixture, id, token)
+    assert.equal(job.status, 'failed')
+    assert.equal(job.upstreamStatus, status)
+    assert.equal(job.attemptCount, 1)
+    assert.equal(upstreamCalls, 1)
+  }
+})
+
+test('400 image_stream_timeout 按临时上游故障重试', async () => {
+  let upstreamCalls = 0
+  const fixture = await createFixture(async (req, res) => {
+    upstreamCalls += 1
+    await readRequest(req)
+    res.writeHead(upstreamCalls === 1 ? 400 : 200, { 'content-type': 'application/json' })
+    res.end(upstreamCalls === 1
+      ? '{"error":{"code":"image_stream_timeout","message":"try again"}}'
+      : '{"ok":true}')
+  })
+  const id = randomUUID()
+  const token = randomUUID()
+  assert.equal((await putJob(fixture, { id, token })).status, 202)
+
+  const job = await waitForTerminal(fixture, id, token)
+  assert.equal(job.status, 'succeeded')
+  assert.equal(job.attemptCount, 2)
+  assert.equal(upstreamCalls, 2)
+  assert.equal(fixture.logs.find((entry) => entry.status === 'retrying')?.retryReason, 'upstream_image_stream_timeout')
+})
+
+test('503 image_unsafe 安全审核结果不会重试', async () => {
+  let upstreamCalls = 0
+  const expected = '{"error":{"message":"poll failed: 451 {\\"error_code\\":\\"image_unsafe\\"}"}}'
+  const fixture = await createFixture(async (req, res) => {
+    upstreamCalls += 1
+    await readRequest(req)
+    res.writeHead(503, { 'content-type': 'application/json' })
+    res.end(expected)
+  }, { IMAGE_JOB_MAX_ATTEMPTS: '3' })
+  const id = randomUUID()
+  const token = randomUUID()
+  assert.equal((await putJob(fixture, { id, token })).status, 202)
+
+  const job = await waitForTerminal(fixture, id, token)
+  assert.equal(job.status, 'failed')
+  assert.equal(job.upstreamStatus, 503)
+  assert.equal(job.attemptCount, 1)
+  assert.equal(upstreamCalls, 1)
+  const result = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result`, {
+    headers: { 'x-task-token': token },
+  })
+  assert.equal(result.status, 503)
+  assert.equal(await result.text(), expected)
+})
+
 test('重启后 queued 密文可恢复派发，已运行任务只变 unknown', async () => {
   let upstreamCalls = 0
   const fixture = await createFixture(async (req, res) => {
@@ -438,6 +588,32 @@ test('重启后 queued 密文可恢复派发，已运行任务只变 unknown', a
   assert.equal(unknown.status, 'unknown')
   assert.equal((await waitForTerminal(fixture, queuedJob.id, queuedJob.token)).status, 'succeeded')
   assert.equal(upstreamCalls, 2)
+})
+
+test('旧任务数据库启动时自动补充重试次数字段', async () => {
+  const fixture = await createFixture(async (req, res) => {
+    await readRequest(req)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"ok":true}')
+  })
+  await fixture.proxy.close()
+  fixture.proxy = null
+  const db = new DatabaseSync(path.join(fixture.dataDir, 'jobs.sqlite'))
+  db.exec('ALTER TABLE jobs DROP COLUMN attempt_count')
+  assert.equal(db.prepare('PRAGMA table_info(jobs)').all().some((column) => column.name === 'attempt_count'), false)
+  db.close()
+
+  const restarted = createImageJobProxy({ env: fixture.env, logger: () => {} })
+  const address = await restarted.listen()
+  fixture.proxy = restarted
+  fixture.baseUrl = `http://127.0.0.1:${address.port}`
+  const migrated = new DatabaseSync(path.join(fixture.dataDir, 'jobs.sqlite'))
+  assert.equal(migrated.prepare('PRAGMA table_info(jobs)').all().some((column) => column.name === 'attempt_count'), true)
+  migrated.close()
+  const id = randomUUID()
+  const token = randomUUID()
+  assert.equal((await putJob(fixture, { id, token })).status, 202)
+  assert.equal((await waitForTerminal(fixture, id, token)).attemptCount, 1)
 })
 
 test('task token 隔离任务且冲突 token 不能复用 job id', async () => {
@@ -576,11 +752,16 @@ test('部署配置使用 secret 文件、回环端口和可信 Docker 代理链'
   const readme = readFileSync(path.join(process.cwd(), 'README.md'), 'utf8')
   assert.match(compose, /IMAGE_JOB_ENCRYPTION_KEY_FILE: \/run\/secrets\/image_job_encryption_key/)
   assert.match(compose, /DEFAULT_API_URL: \$\{DEFAULT_API_URL:-https:\/\/api\.llm-token\.cn\/v1\}/)
+  assert.match(compose, /LOCK_API_PROXY: \$\{LOCK_API_PROXY:-false\}/)
   assert.match(compose, /container_name: image-gpt-image-playground/)
   assert.match(compose, /container_name: image-gpt-image-task-proxy/)
   assert.doesNotMatch(compose, /^\s+IMAGE_JOB_ENCRYPTION_KEY:/m)
   assert.match(compose, /^\s+secrets:\n\s+- image_job_encryption_key/m)
   assert.match(compose, /IMAGE_JOB_TRUST_PROXY_CIDRS: [^\n]*172\.16\.0\.0\/12/)
+  assert.match(compose, /IMAGE_JOB_MAX_ATTEMPTS: \$\{IMAGE_JOB_MAX_ATTEMPTS:-2\}/)
+  assert.match(compose, /IMAGE_JOB_RETRY_BASE_DELAY_MS: \$\{IMAGE_JOB_RETRY_BASE_DELAY_MS:-2000\}/)
+  assert.match(compose, /IMAGE_JOB_RETRY_MAX_DELAY_MS: \$\{IMAGE_JOB_RETRY_MAX_DELAY_MS:-60000\}/)
+  assert.match(compose, /stop_grace_period: 41m/)
   assert.match(compose, /'127\.0\.0\.1:\$\{IMAGE_SITE_PORT:-8080\}:80'/)
   assert.doesNotMatch(compose, /^\s+ports:\n\s+- ['"]?3001:/m)
   assert.match(nginx, /set_real_ip_from 172\.16\.0\.0\/12;/)
@@ -793,9 +974,13 @@ test('日志和持久文件不含 API key、提示词、参考图或响应明文
     assert.equal(diskText.includes(value), false)
   }
   assert.deepEqual(Object.keys(fixture.logs.at(-1)).sort(), [
+    'attempt',
     'durationMs',
     'httpStatus',
     'jobId',
+    'maxAttempts',
+    'retryDelayMs',
+    'retryReason',
     'status',
     'upstreamRequestId',
   ])

@@ -1571,13 +1571,13 @@ export default function SettingsModal() {
                             <button
                               key={site.id}
                               type="button"
-                              onClick={() => updateActiveProfile({ baseUrl: site.url }, true)}
-                              disabled={apiProxyEnabled}
+                              onClick={() => updateActiveProfile({ baseUrl: site.url, apiProxy: false }, true)}
+                              disabled={apiProxyLocked}
                               aria-pressed={selected}
                               title={site.url}
                               className={`group min-h-14 rounded-lg border px-2.5 py-2 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-blue-500/60 ${selected
                                 ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm shadow-blue-500/10 dark:border-blue-400 dark:bg-blue-500/15 dark:text-blue-200'
-                                : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50/50 dark:border-white/[0.08] dark:bg-white/[0.035] dark:text-gray-200 dark:hover:border-blue-500/40 dark:hover:bg-blue-500/[0.08]'} ${apiProxyEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                                : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50/50 dark:border-white/[0.08] dark:bg-white/[0.035] dark:text-gray-200 dark:hover:border-blue-500/40 dark:hover:bg-blue-500/[0.08]'} ${apiProxyLocked ? 'cursor-not-allowed opacity-50' : ''}`}
                             >
                               <span className="flex items-center gap-1.5 text-xs font-semibold">
                                 {site.label}
@@ -1593,8 +1593,10 @@ export default function SettingsModal() {
                     </div>
                   )}
                   <div data-selectable-text className="mt-1.5 min-h-[22px] flex items-center text-xs text-gray-500 dark:text-gray-500">
-                    {apiProxyEnabled ? (
-                      <span className="text-yellow-600 dark:text-yellow-500">已开启代理，实际请求目标由部署端决定，此处设置被忽略。</span>
+                    {apiProxyLocked ? (
+                      <span className="text-yellow-600 dark:text-yellow-500">代理已由部署端锁定，实际请求目标由部署端决定。</span>
+                    ) : apiProxyEnabled ? (
+                      <span className="text-yellow-600 dark:text-yellow-500">当前使用服务器代理；选择推荐站点会关闭代理并切换为对应区域直连。</span>
                     ) : activeProfile.provider === 'fal' ? (
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_FAL_BASE_URL}</code>；填写自定义地址时将作为 fal.ai 代理 URL。</span>
                     ) : (

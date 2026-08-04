@@ -6,6 +6,9 @@ services:
       IMAGE_JOB_UPSTREAM_URL: ${API_PROXY_URL:?API_PROXY_URL is required}
       IMAGE_JOB_ENCRYPTION_KEY_FILE: /run/secrets/image_job_encryption_key
       IMAGE_JOB_TRUST_PROXY_CIDRS: 127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      IMAGE_JOB_MAX_ATTEMPTS: ${IMAGE_JOB_MAX_ATTEMPTS:-2}
+      IMAGE_JOB_RETRY_BASE_DELAY_MS: ${IMAGE_JOB_RETRY_BASE_DELAY_MS:-2000}
+      IMAGE_JOB_RETRY_MAX_DELAY_MS: ${IMAGE_JOB_RETRY_MAX_DELAY_MS:-60000}
     secrets:
       - image_job_encryption_key
     volumes:
@@ -15,7 +18,7 @@ services:
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     restart: unless-stopped
-    stop_grace_period: 21m
+    stop_grace_period: 41m
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -31,7 +34,7 @@ services:
       DEFAULT_API_URL: ${DEFAULT_API_URL:-https://api.llm-token.cn/v1}
       API_PROXY_URL: ${API_PROXY_URL:?API_PROXY_URL is required}
       ENABLE_API_PROXY: 'true'
-      LOCK_API_PROXY: 'true'
+      LOCK_API_PROXY: ${LOCK_API_PROXY:-false}
       ENABLE_IMAGE_JOBS: 'true'
       IMAGE_JOB_PROXY_URL: http://image-task-proxy:3001
     ports:
