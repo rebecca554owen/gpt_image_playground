@@ -248,6 +248,7 @@ docker run -d -p 127.0.0.1:8080:80 \
 services:
   image-task-proxy:
     image: ghcr.io/rebecca554owen/gpt_image_playground-task-proxy:${IMAGE_TAG}
+    container_name: image-gpt-image-task-proxy
     environment:
       IMAGE_JOB_UPSTREAM_URL: ${API_PROXY_URL}
       IMAGE_JOB_ENCRYPTION_KEY_FILE: /run/secrets/image_job_encryption_key
@@ -258,10 +259,11 @@ services:
       - image-job-data:/var/lib/image-jobs
     restart: unless-stopped
 
-  gpt-image-playground:
+  image-gpt-image-playground:
     image: ghcr.io/rebecca554owen/gpt_image_playground:${IMAGE_TAG}
+    container_name: image-gpt-image-playground
     environment:
-      DEFAULT_API_URL: ${DEFAULT_API_URL:-}
+      DEFAULT_API_URL: ${DEFAULT_API_URL:-https://api.llm-token.cn/v1}
       API_PROXY_URL: ${API_PROXY_URL}
       ENABLE_API_PROXY: 'true'
       LOCK_API_PROXY: 'true'
@@ -281,13 +283,14 @@ secrets:
 
 完整示例见 `deploy/docker-compose.image-jobs.yml`。生产环境的 `IMAGE_TAG` 必须使用同一个提交对应的不可变 `sha-<commit前12位>` 标签，确保前端和任务服务版本一致，不要使用 `latest`。
 
-首次启用时，在仓库目录之外生成仅 root 可读的 32 字节密钥文件，并把文件路径作为 Compose 插值变量；密钥内容不会进入容器环境变量：
+首次启用时，在仓库目录之外生成 32 字节密钥文件，并把文件路径作为 Compose 插值变量；任务容器固定以 UID/GID `10001` 非 root 运行，因此宿主机密钥必须归该 UID/GID 所有且仅所有者可读。密钥内容不会进入容器环境变量：
 
 ```bash
 sudo install -d -m 700 /etc/gpt-image-playground
 umask 077
 openssl rand -hex 32 | sudo tee /etc/gpt-image-playground/image-job-encryption-key >/dev/null
-sudo chmod 600 /etc/gpt-image-playground/image-job-encryption-key
+sudo chown 10001:10001 /etc/gpt-image-playground/image-job-encryption-key
+sudo chmod 400 /etc/gpt-image-playground/image-job-encryption-key
 export IMAGE_JOB_ENCRYPTION_KEY_FILE=/etc/gpt-image-playground/image-job-encryption-key
 export IMAGE_TAG=sha-0123456789ab
 docker compose -f deploy/docker-compose.image-jobs.yml up -d

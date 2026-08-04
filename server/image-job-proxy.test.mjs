@@ -573,6 +573,7 @@ test('任务代理镜像保持非 root、健康检查和持久卷配置', () => 
 test('部署配置使用 secret 文件、回环端口和可信 Docker 代理链', () => {
   const compose = readFileSync(path.join(process.cwd(), 'deploy/docker-compose.image-jobs.yml'), 'utf8')
   const nginx = readFileSync(path.join(process.cwd(), 'deploy/nginx.conf'), 'utf8')
+  const readme = readFileSync(path.join(process.cwd(), 'README.md'), 'utf8')
   assert.match(compose, /IMAGE_JOB_ENCRYPTION_KEY_FILE: \/run\/secrets\/image_job_encryption_key/)
   assert.match(compose, /DEFAULT_API_URL: \$\{DEFAULT_API_URL:-https:\/\/api\.llm-token\.cn\/v1\}/)
   assert.match(compose, /container_name: image-gpt-image-playground/)
@@ -586,6 +587,9 @@ test('部署配置使用 secret 文件、回环端口和可信 Docker 代理链'
   assert.match(nginx, /real_ip_header X-Forwarded-For;/)
   assert.match(nginx, /real_ip_recursive on;/)
   assert.match(nginx, /proxy_set_header X-Forwarded-For \$remote_addr;/)
+  assert.match(readme, /DEFAULT_API_URL: \$\{DEFAULT_API_URL:-https:\/\/api\.llm-token\.cn\/v1\}/)
+  assert.match(readme, /sudo chown 10001:10001 \/etc\/gpt-image-playground\/image-job-encryption-key/)
+  assert.match(readme, /sudo chmod 400 \/etc\/gpt-image-playground\/image-job-encryption-key/)
 })
 
 test('Docker workflow 隔离只读 PR 校验与 GHCR 发布权限', () => {
