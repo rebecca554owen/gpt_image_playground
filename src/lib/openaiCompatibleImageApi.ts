@@ -4,11 +4,13 @@ import { runLimitedSettled } from './concurrency'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import {
   fetchWithServerImageJob,
+  fetchServerImageJobResultImage,
   isServerImageJobRecoverableError,
   isServerImageJobTerminalError,
   isServerImageJobTerminalResponse,
   ServerImageJobRecoverableError,
   ServerImageJobTerminalError,
+  type ServerImageJobRequestRef,
 } from './serverImageJobs'
 import {
   assertImageInputPayloadSize,
@@ -493,7 +495,12 @@ function createNoImageDataError(payload: unknown, fallbackMessage: string): Erro
   )
 }
 
-async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
+async function parseImagesApiResponse(
+  payload: ImageApiResponse,
+  mime: string,
+  signal?: AbortSignal,
+  serverJob?: ServerImageJobRequestRef,
+): Promise<CallApiResult> {
   const data = payload.data
   if (!Array.isArray(data) || !data.length) {
     const fallbackResult = await extractFallbackImages(payload, mime, signal)
@@ -505,7 +512,8 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
   const rawImageUrls = data.map((item) => item.url).filter(isHttpUrl)
   const revisedPrompts: Array<string | undefined> = []
   try {
-    for (const item of data) {
+    for (let index = 0; index < data.length; index += 1) {
+      const item = data[index]
       const b64 = item.b64_json
       if (b64) {
         images.push(normalizeBase64Image(b64, mime))
@@ -514,7 +522,9 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
       }
 
       if (isHttpUrl(item.url) || isDataUrl(item.url)) {
-        images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal))
+        images.push(serverJob && isHttpUrl(item.url)
+          ? await fetchServerImageJobResultImage(serverJob, index, mime, signal)
+          : await fetchImageUrlAsDataUrl(item.url, mime, signal))
         revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
       }
     }
@@ -560,6 +570,7 @@ async function parseImagesApiStreamResponse(
   mime: string,
   onPartialImage?: CallApiOptions['onPartialImage'],
   onActivity?: () => void,
+  serverJob?: ServerImageJobRequestRef,
 ): Promise<CallApiResult> {
   const completedItems: ImageResponseItem[] = []
   let resultPayload: ImageApiResponse | null = null
@@ -589,7 +600,7 @@ async function parseImagesApiStreamResponse(
   }, onActivity)
 
   if (resultPayload) {
-    return parseImagesApiResponse(resultPayload, mime)
+    return parseImagesApiResponse(resultPayload, mime, undefined, serverJob)
   }
 
   if (!completedItems.length) {
@@ -820,6 +831,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, re
   const controller = new AbortController()
   const timeout = createResettableRequestTimeout(controller, profile.timeout)
   const existingJob = opts.serverImageJobs?.find((job) => job.requestIndex === requestIndex)
+  let serverJobRef = existingJob
   let serverJobCreated = false
 
   try {
@@ -903,6 +915,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, re
         requestIndex,
         signal: controller.signal,
         onJobCreated: async (job) => {
+          serverJobRef = job
           serverJobCreated = true
           await opts.onServerImageJobEnqueued?.(job)
         },
@@ -952,6 +965,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, re
         requestIndex,
         signal: controller.signal,
         onJobCreated: async (job) => {
+          serverJobRef = job
           serverJobCreated = true
           await opts.onServerImageJobEnqueued?.(job)
         },
@@ -973,10 +987,10 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, re
       return await parseImagesApiStreamResponse(response, mime, opts.onPartialImage, () => {
         timeout.reset()
         opts.onStreamActivity?.()
-      })
+      }, serverJobRef)
     }
 
-    return await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    return await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal, serverJobRef)
   } catch (err) {
     if ((existingJob || serverJobCreated) && !isServerImageJobTerminalError(err)) {
       if (isServerImageJobRecoverableError(err)) throw err
@@ -1367,6 +1381,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const controller = new AbortController()
   const timeout = createResettableRequestTimeout(controller, profile.timeout)
   const existingJob = opts.serverImageJobs?.find((job) => job.requestIndex === requestIndex)
+  let serverJobRef = existingJob
   let serverJobCreated = false
 
   try {
@@ -1420,6 +1435,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
         requestIndex,
         signal: controller.signal,
         onJobCreated: async (job) => {
+          serverJobRef = job
           serverJobCreated = true
           await opts.onServerImageJobEnqueued?.(job)
         },
@@ -1449,7 +1465,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     try {
       imageResults = parseResponsesImageResults(payload, mime)
     } catch (err) {
-      const fallbackResult = await parseImagesApiResponse(payload as ImageApiResponse, mime, controller.signal).catch(() => null)
+      const fallbackResult = await parseImagesApiResponse(payload as ImageApiResponse, mime, controller.signal, serverJobRef).catch(() => null)
       if (fallbackResult) return fallbackResult
       throw err
     }

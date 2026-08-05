@@ -324,6 +324,38 @@ test('客户端结束提交连接后后台继续并可稍后取回结果', async
   assert.deepEqual(Buffer.from(await result.arrayBuffer()), expected)
 })
 
+test('已保存的图片 URL 可通过任务凭证同源下载', async () => {
+  const expected = Buffer.from('proxied-image-bytes')
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url === '/result.png') {
+      res.writeHead(200, { 'content-length': expected.length, 'content-type': 'image/png' })
+      res.end(expected)
+      return
+    }
+    await readRequest(req)
+    const port = req.socket.localPort
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ data: [{ url: `http://127.0.0.1:${port}/result.png` }] }))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  const id = randomUUID()
+  const token = randomUUID()
+  assert.equal((await putJob(fixture, { id, token })).status, 202)
+  assert.equal((await waitForTerminal(fixture, id, token)).status, 'succeeded')
+
+  const result = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': token },
+  })
+  const resultBytes = Buffer.from(await result.arrayBuffer())
+  assert.equal(result.status, 200, resultBytes.toString())
+  assert.equal(result.headers.get('content-type'), 'image/png')
+  assert.deepEqual(resultBytes, expected)
+
+  const forbidden = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': randomUUID() },
+  })
+  assert.equal(forbidden.status, 403)
+})
+
 test('正常关闭会停止接单并等待已派发任务完成', async () => {
   let upstreamFinished = false
   const fixture = await createFixture(async (req, res) => {
@@ -752,6 +784,7 @@ test('部署配置使用 secret 文件、回环端口和可信 Docker 代理链'
   const readme = readFileSync(path.join(process.cwd(), 'README.md'), 'utf8')
   const settingsModal = readFileSync(path.join(process.cwd(), 'src/components/SettingsModal.tsx'), 'utf8')
   assert.match(compose, /IMAGE_JOB_ENCRYPTION_KEY_FILE: \/run\/secrets\/image_job_encryption_key/)
+  assert.match(compose, /IMAGE_JOB_RESULT_IMAGE_HOSTS: imagefil\.scdn\.app/)
   assert.match(compose, /DEFAULT_API_URL: \$\{DEFAULT_API_URL:-https:\/\/api\.llm-token\.cn\/v1\}/)
   assert.match(compose, /LOCK_API_PROXY: 'true'/)
   assert.match(compose, /container_name: image-gpt-image-playground/)

@@ -91,6 +91,17 @@ const parseTrustedProxyCidrs = (value) => {
   })
 }
 
+const parseResultImageHosts = (value) => {
+  if (!value?.trim()) return new Set()
+  return new Set(value.split(',').map((raw) => {
+    const host = raw.trim().toLowerCase()
+    if (!host || host.includes('/') || host.includes(':') || /\s/.test(host)) {
+      throw new Error('IMAGE_JOB_RESULT_IMAGE_HOSTS must contain comma-separated hostnames')
+    }
+    return host
+  }))
+}
+
 const isTrustedProxyAddress = (address, cidrs) => {
   const normalized = normalizeIpAddress(address)
   if (!normalized || isIP(normalized) !== 4) return false
@@ -328,6 +339,8 @@ export const createImageJobProxy = (options = {}) => {
     maxResultBytes: readInteger(env.IMAGE_JOB_MAX_RESULT_BYTES, 600 * 1024 * 1024, 1, Number.MAX_SAFE_INTEGER),
     maxWaitersPerJob: readInteger(env.IMAGE_JOB_MAX_WAITERS_PER_JOB, 4, 1, 100),
     port: readInteger(env.IMAGE_JOB_PORT, 3001, 0, 65_535),
+    resultImageHosts: parseResultImageHosts(env.IMAGE_JOB_RESULT_IMAGE_HOSTS),
+    resultImageTimeoutMs: readInteger(env.IMAGE_JOB_RESULT_IMAGE_TIMEOUT_MS, 120_000, 1_000, 1_200_000),
     retryBaseDelayMs: readInteger(env.IMAGE_JOB_RETRY_BASE_DELAY_MS, 2_000, 0, 60_000),
     retryMaxDelayMs: readInteger(env.IMAGE_JOB_RETRY_MAX_DELAY_MS, 60_000, 0, 300_000),
     successTtlMs: readInteger(env.IMAGE_JOB_SUCCESS_TTL_MS, 24 * 60 * 60 * 1000, 1_000, 365 * 24 * 60 * 60 * 1000),
@@ -933,20 +946,22 @@ export const createImageJobProxy = (options = {}) => {
         return
       }
 
+      const resultImageMatch = url.pathname.match(/^\/v1\/jobs\/([A-Za-z0-9_-]{20,128})\/result-images\/(\d{1,4})$/)
       const match = url.pathname.match(/^\/v1\/jobs\/([A-Za-z0-9_-]{20,128})(?:\/(result))?$/)
-      if (!match) throw new HttpError(404, 'not_found')
-      const id = match[1]
-      const resultRoute = match[2] === 'result'
+      if (!match && !resultImageMatch) throw new HttpError(404, 'not_found')
+      const id = resultImageMatch?.[1] ?? match[1]
+      const resultRoute = match?.[2] === 'result'
+      const resultImageIndex = resultImageMatch ? Number(resultImageMatch[2]) : null
       const token = getHeader(req, 'x-task-token')
       if (!token || token.length < 16 || token.length > 512) throw new HttpError(401, 'task_token_required')
 
-      if (req.method === 'PUT' && !resultRoute) {
+      if (req.method === 'PUT' && !resultRoute && resultImageIndex === null) {
         await handlePut(req, res, id, url, token)
         return
       }
 
       if (url.search) throw new HttpError(400, 'unsupported_query_parameter')
-      if (req.method === 'GET' && !resultRoute) {
+      if (req.method === 'GET' && !resultRoute && resultImageIndex === null) {
         const row = rowForId.get(id)
         if (row) {
           if (!isSameDigest(row.token_digest, hmac('task-token', token))) {
@@ -975,6 +990,75 @@ export const createImageJobProxy = (options = {}) => {
       }
 
       const row = requireJob(id, token)
+      if (req.method === 'GET' && resultImageIndex !== null) {
+        if (!row.result_file || !row.result_meta_file) throw new HttpError(409, 'result_not_available')
+        const meta = await readEncryptedJson(row.result_meta_file, key)
+        if (!String(meta.contentType || '').toLowerCase().includes('json')) {
+          throw new HttpError(404, 'result_image_not_available')
+        }
+        const payload = await readEncryptedJson(row.result_file, key, Math.min(config.maxResultBytes, 1024 * 1024))
+        const imageUrl = payload?.data?.[resultImageIndex]?.url
+        if (typeof imageUrl !== 'string') throw new HttpError(404, 'result_image_not_available')
+
+        let target
+        try {
+          target = new URL(imageUrl)
+        } catch {
+          throw new HttpError(502, 'invalid_result_image_url')
+        }
+        const host = target.hostname.toLowerCase()
+        if (
+          !['http:', 'https:'].includes(target.protocol)
+          || target.username
+          || target.password
+          || target.hash
+          || !config.resultImageHosts.has(host)
+        ) {
+          throw new HttpError(502, 'result_image_host_not_allowed')
+        }
+
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), config.resultImageTimeoutMs)
+        timeout.unref()
+        const abortOnClose = () => {
+          if (!res.writableEnded) controller.abort()
+        }
+        res.once('close', abortOnClose)
+        try {
+          const response = await fetch(target, { redirect: 'manual', signal: controller.signal })
+          if (!response.ok || !response.body) throw new HttpError(502, 'result_image_download_failed')
+          const contentType = response.headers.get('content-type') || 'application/octet-stream'
+          if (!contentType.toLowerCase().startsWith('image/')) throw new HttpError(502, 'invalid_result_image_type')
+          const lengthHeader = response.headers.get('content-length')
+          const length = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : null
+          if (length !== null && (!Number.isSafeInteger(length) || length > config.maxResultBytes)) {
+            throw new HttpError(413, 'result_image_too_large')
+          }
+
+          let size = 0
+          const limiter = new Transform({
+            transform(chunk, _encoding, callback) {
+              size += chunk.length
+              if (size > config.maxResultBytes) {
+                callback(new HttpError(413, 'result_image_too_large'))
+                return
+              }
+              callback(null, chunk)
+            },
+          })
+          res.writeHead(200, {
+            'cache-control': 'no-store',
+            'content-type': contentType,
+            ...(length !== null ? { 'content-length': length } : {}),
+          })
+          await pipeline(Readable.fromWeb(response.body), limiter, res)
+        } finally {
+          clearTimeout(timeout)
+          res.off('close', abortOnClose)
+        }
+        return
+      }
+
       if (req.method === 'GET' && resultRoute) {
         if (!row.result_file || !row.result_meta_file) {
           throw new HttpError(409, 'result_not_available')

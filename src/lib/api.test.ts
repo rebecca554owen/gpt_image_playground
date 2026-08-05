@@ -705,10 +705,12 @@ describe('callImageApi', () => {
     await expect(request).rejects.toSatisfy((err: unknown) => isServerImageJobRecoverableError(err))
   })
 
-  it('wraps an asynchronous stored image parsing failure before concurrent aggregation', async () => {
+  it('downloads stored image URL results through the authenticated task service', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
-      if (url === 'https://cdn.example.com/missing.png') throw new TypeError('image download failed')
+      if (url.endsWith('/result-images/0')) {
+        return new Response(new Uint8Array([105, 109, 97, 103, 101]), { headers: { 'Content-Type': 'image/png' } })
+      }
       if (url.endsWith('/result')) {
         return url.includes('job-b')
           ? Response.json({ data: [{ url: 'https://cdn.example.com/missing.png' }] })
@@ -717,7 +719,7 @@ describe('callImageApi', () => {
       return Response.json({ id: url.includes('job-b') ? 'job-b' : 'job-a', status: 'succeeded', hasResult: true })
     })
 
-    const request = callImageApi({
+    const result = await callImageApi({
       settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'images' },
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS, n: 2 },
@@ -728,7 +730,12 @@ describe('callImageApi', () => {
       ],
     })
 
-    await expect(request).rejects.toSatisfy((err: unknown) => isServerImageJobRecoverableError(err))
+    expect(result.images).toEqual([
+      'data:image/png;base64,aW1hZ2UtYQ==',
+      'data:image/png;base64,aW1hZ2U=',
+    ])
+    const imageCall = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input).endsWith('/result-images/0'))
+    expect(imageCall?.[1]?.headers).toEqual({ 'X-Task-Token': 'token-b' })
   })
 
   it('wraps an asynchronous stored Responses stream parsing failure as recoverable', async () => {

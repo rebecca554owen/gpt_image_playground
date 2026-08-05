@@ -1,4 +1,5 @@
 import type { ServerImageJobRef } from '../types'
+import { blobToDataUrl } from './dataUrl'
 import { readRuntimeEnv } from './runtimeEnv'
 
 const SERVER_IMAGE_JOB_API = '/task-api/v1/jobs'
@@ -308,4 +309,21 @@ export async function deleteServerImageJob(ref: Pick<ServerImageJobRef, 'jobId' 
     cache: 'no-store',
   })
   if (!response.ok && response.status !== 404) throw new Error(`任务清理失败：HTTP ${response.status}`)
+}
+
+export async function fetchServerImageJobResultImage(
+  ref: ServerImageJobRequestRef,
+  imageIndex: number,
+  fallbackMime: string,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(getJobUrl(ref.jobId, `/result-images/${imageIndex}`), {
+    headers: getJobHeaders(ref.token),
+    cache: 'no-store',
+    signal,
+  }).catch((err) => {
+    throw createJobNetworkError(err, '服务端生成结果中的图片下载中断，可稍后继续查看原任务。')
+  })
+  if (!response.ok) throw await createJobHttpError(response, `生成结果图片读取失败：HTTP ${response.status}`)
+  return blobToDataUrl(await response.blob(), fallbackMime)
 }
