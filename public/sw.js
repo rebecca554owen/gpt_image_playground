@@ -1,6 +1,7 @@
-const CACHE_NAME = 'gpt-image-playground-v0.4.20'
+const CACHE_NAME = 'gpt-image-playground-v0.6.17'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
 const NETWORK_FIRST_DESTINATIONS = new Set(['script', 'style', 'worker'])
+const NETWORK_ONLY_PATH_PREFIXES = ['/api-proxy/', '/task-api/']
 
 function putCache(request, response) {
   if (!response.ok) return
@@ -31,6 +32,11 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
+
+  if (request.cache === 'no-store' || NETWORK_ONLY_PATH_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) {
+    event.respondWith(fetch(request))
+    return
+  }
 
   if (request.mode === 'navigate') {
     event.respondWith(

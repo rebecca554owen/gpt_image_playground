@@ -778,6 +778,19 @@ test('部署配置使用 secret 文件、回环端口和可信 Docker 代理链'
   assert.match(settingsModal, /disabled=\{apiProxyEnabled\}[\s\S]{0,500}aria-pressed=\{selected\}/)
 })
 
+test('Service Worker 不缓存任务与代理接口并强制检查新版本', () => {
+  const serviceWorker = readFileSync(path.join(process.cwd(), 'public/sw.js'), 'utf8')
+  const main = readFileSync(path.join(process.cwd(), 'src/main.tsx'), 'utf8')
+  const nginx = readFileSync(path.join(process.cwd(), 'deploy/nginx.conf'), 'utf8')
+  const networkOnly = serviceWorker.indexOf("NETWORK_ONLY_PATH_PREFIXES = ['/api-proxy/', '/task-api/']")
+  const cacheFirst = serviceWorker.indexOf('caches.match(request)')
+  assert.notEqual(networkOnly, -1)
+  assert.ok(cacheFirst > networkOnly)
+  assert.match(serviceWorker, /NETWORK_ONLY_PATH_PREFIXES\.some[\s\S]{0,200}event\.respondWith\(fetch\(request\)\)/)
+  assert.match(main, /serviceWorker\.register\([^\n]+\{ updateViaCache: 'none' \}\)/)
+  assert.match(nginx, /location = \/sw\.js \{[\s\S]{0,200}Cache-Control "no-store, no-cache, must-revalidate"/)
+})
+
 test('Docker workflow 隔离只读 PR 校验与 GHCR 发布权限', () => {
   const workflow = readFileSync(path.join(process.cwd(), '.github/workflows/docker.yml'), 'utf8')
   assert.match(workflow, /pull_request:\n\s+branches: \['main'\]/)

@@ -12,7 +12,7 @@ installMobileViewportGuards()
 if ('serviceWorker' in navigator) {
   if (import.meta.env.PROD) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`)
+      navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, { updateViaCache: 'none' })
         .then((registration) => {
           registration.update().catch(() => {
             /* 静默失败，不影响正常使用 */
