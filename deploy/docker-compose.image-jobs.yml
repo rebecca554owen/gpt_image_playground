@@ -34,7 +34,7 @@ services:
       DEFAULT_API_URL: ${DEFAULT_API_URL:-https://api.llm-token.cn/v1}
       API_PROXY_URL: ${API_PROXY_URL:?API_PROXY_URL is required}
       ENABLE_API_PROXY: 'true'
-      LOCK_API_PROXY: ${LOCK_API_PROXY:-false}
+      LOCK_API_PROXY: 'true'
       ENABLE_IMAGE_JOBS: 'true'
       IMAGE_JOB_PROXY_URL: http://image-task-proxy:3001
     ports:

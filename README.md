@@ -178,7 +178,7 @@ Docker 部署支持在运行时注入默认配置。
 - `DEFAULT_API_URL`：设置页面上默认显示的 API 地址（如 `https://api.openai.com/v1`）。也支持填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL 来导入自定义服务商配置，以及通过 URL 查询参数预设默认配置。
 - `API_PROXY_URL`：配置内置代理实际转发到的完整 API 基础地址（仅开启代理时有效）。代理不会自动补 `/v1`，OpenAI 兼容接口通常必须填写到版本前缀，如 `https://api.openai.com/v1`。
 - `ENABLE_API_PROXY`：设为 `true` 开启容器内置 Nginx 同源代理，用于解决浏览器跨域（CORS）限制。开启后，前端 **API 代理** 开关默认开启，浏览器会请求同源的 `/api-proxy/{接口相对路径}`，再由 Nginx 拼接到 `API_PROXY_URL` 后转发；用户仍可在设置中手动关闭。
-- `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。保持为 `false` 时，用户可以关闭代理；点击推荐站点会同时切换到对应区域直连。
+- `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。保持为 `false` 时，用户可以手动关闭代理；推荐站点不会自动关闭已开启的代理。
 - `ENABLE_IMAGE_JOBS`：与 `ENABLE_API_PROXY=true` 一起使用时，将内置 OpenAI Images、Edits 和 Responses 请求交给独立任务服务。浏览器断网、切后台或刷新后会继续查询同一个服务端任务，不会创建新的任务。
 - `IMAGE_JOB_PROXY_URL`：任务服务的容器内地址，默认 `http://image-task-proxy:3001`。任务服务不应映射公网端口。
 - `IMAGE_JOB_ENCRYPTION_KEY_FILE`：任务服务读取 32 字节加密密钥的 secret 文件路径。生产环境应使用 Compose secret 挂载到 `/run/secrets/`，不要把密钥放进环境变量、Compose 文件或 Git。
@@ -271,7 +271,7 @@ services:
       DEFAULT_API_URL: ${DEFAULT_API_URL:-https://api.llm-token.cn/v1}
       API_PROXY_URL: ${API_PROXY_URL}
       ENABLE_API_PROXY: 'true'
-      LOCK_API_PROXY: ${LOCK_API_PROXY:-false}
+      LOCK_API_PROXY: 'true'
       ENABLE_IMAGE_JOBS: 'true'
       IMAGE_JOB_PROXY_URL: http://image-task-proxy:3001
     ports:

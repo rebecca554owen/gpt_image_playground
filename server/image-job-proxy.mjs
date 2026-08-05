@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 import { createReadStream, createWriteStream, fsyncSync, mkdirSync, openSync, closeSync, readFileSync, readSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs'
 import { appendFile, rm } from 'node:fs/promises'
 import http from 'node:http'
+import https from 'node:https'
 import { isIP } from 'node:net'
 import path from 'node:path'
 import { Readable, Transform } from 'node:stream'
@@ -277,6 +278,36 @@ const removeFileQuietly = (file) => {
   } catch {}
 }
 
+const postStream = (target, headers, body, signal) => new Promise((resolve, reject) => {
+  const client = target.protocol === 'https:' ? https : http
+  let settled = false
+  const req = client.request(target, {
+    method: 'POST',
+    headers,
+    signal,
+  }, (res) => {
+    settled = true
+    const status = res.statusCode || 502
+    resolve({
+      body: res,
+      headers: {
+        get(name) {
+          const value = res.headers[name.toLowerCase()]
+          if (Array.isArray(value)) return value.join(', ')
+          return value ?? null
+        },
+      },
+      ok: status >= 200 && status < 300,
+      status,
+    })
+  })
+  req.on('error', (err) => {
+    if (!settled) reject(err)
+  })
+  body.on('error', (err) => req.destroy(err))
+  body.pipe(req)
+})
+
 export const createImageJobProxy = (options = {}) => {
   const env = { ...process.env, ...options.env }
   const key = readEncryptionKey(env)
@@ -539,14 +570,7 @@ export const createImageJobProxy = (options = {}) => {
 
         try {
           dispatched = true
-          const response = await fetch(target, {
-            method: 'POST',
-            headers,
-            body: createDecryptedStream(row.request_file, key),
-            duplex: 'half',
-            redirect: 'manual',
-            signal: controller.signal,
-          })
+          const response = await postStream(target, headers, createDecryptedStream(row.request_file, key), controller.signal)
           receivedResponse = true
           const upstreamRequestId = safeRequestId(
             response.headers.get('x-request-id')
@@ -572,7 +596,7 @@ export const createImageJobProxy = (options = {}) => {
             throw new HttpError(413, 'body_too_large')
           }
           const result = await writeEncryptedStream({
-            readable: response.body ? Readable.fromWeb(response.body) : Readable.from([]),
+            readable: response.body,
             target: resultFile,
             key,
             maxBytes: config.maxResultBytes,
