@@ -95,12 +95,23 @@ const parseResultImageHosts = (value) => {
   if (!value?.trim()) return new Set()
   return new Set(value.split(',').map((raw) => {
     const host = raw.trim().toLowerCase()
-    if (!host || host.includes('/') || host.includes(':') || /\s/.test(host)) {
+    const hostname = host.startsWith('*.') ? host.slice(2) : host
+    if (
+      !hostname
+      || hostname.includes('*')
+      || hostname.includes('/')
+      || hostname.includes(':')
+      || /\s/.test(hostname)
+    ) {
       throw new Error('IMAGE_JOB_RESULT_IMAGE_HOSTS must contain comma-separated hostnames')
     }
     return host
   }))
 }
+
+export const isAllowedResultImageHost = (host, rules) => rules.has(host) || [...rules].some((rule) =>
+  rule.startsWith('*.') && host.length > rule.length - 1 && host.endsWith(rule.slice(1)),
+)
 
 const isTrustedProxyAddress = (address, cidrs) => {
   const normalized = normalizeIpAddress(address)
@@ -1012,7 +1023,7 @@ export const createImageJobProxy = (options = {}) => {
           || target.username
           || target.password
           || target.hash
-          || !config.resultImageHosts.has(host)
+          || !isAllowedResultImageHost(host, config.resultImageHosts)
         ) {
           throw new HttpError(502, 'result_image_host_not_allowed')
         }

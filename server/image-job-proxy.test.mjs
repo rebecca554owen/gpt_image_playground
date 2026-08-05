@@ -7,7 +7,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, test } from 'node:test'
 
-import { createImageJobProxy } from './image-job-proxy.mjs'
+import { createImageJobProxy, isAllowedResultImageHost } from './image-job-proxy.mjs'
 
 const fixtures = []
 
@@ -354,6 +354,15 @@ test('已保存的图片 URL 可通过任务凭证同源下载', async () => {
     headers: { 'x-task-token': randomUUID() },
   })
   assert.equal(forbidden.status, 403)
+})
+
+test('结果图片域名仅匹配精确主机或配置的子域后缀', () => {
+  const rules = new Set(['imagefil.scdn.app', '*.000000033.xyz'])
+  assert.equal(isAllowedResultImageHost('imagefil.scdn.app', rules), true)
+  assert.equal(isAllowedResultImageHost('cdn.000000033.xyz', rules), true)
+  assert.equal(isAllowedResultImageHost('000000033.xyz', rules), false)
+  assert.equal(isAllowedResultImageHost('fake000000033.xyz', rules), false)
+  assert.equal(isAllowedResultImageHost('imagefil.scdn.app.evil.example', rules), false)
 })
 
 test('正常关闭会停止接单并等待已派发任务完成', async () => {
@@ -784,7 +793,7 @@ test('部署配置使用 secret 文件、回环端口和可信 Docker 代理链'
   const readme = readFileSync(path.join(process.cwd(), 'README.md'), 'utf8')
   const settingsModal = readFileSync(path.join(process.cwd(), 'src/components/SettingsModal.tsx'), 'utf8')
   assert.match(compose, /IMAGE_JOB_ENCRYPTION_KEY_FILE: \/run\/secrets\/image_job_encryption_key/)
-  assert.match(compose, /IMAGE_JOB_RESULT_IMAGE_HOSTS: imagefil\.scdn\.app/)
+  assert.match(compose, /IMAGE_JOB_RESULT_IMAGE_HOSTS: imagefil\.scdn\.app,\*\.000000033\.xyz,img\.sulmes\.com/)
   assert.match(compose, /DEFAULT_API_URL: \$\{DEFAULT_API_URL:-https:\/\/api\.llm-token\.cn\/v1\}/)
   assert.match(compose, /LOCK_API_PROXY: 'true'/)
   assert.match(compose, /container_name: image-gpt-image-playground/)
