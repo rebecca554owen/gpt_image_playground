@@ -186,6 +186,8 @@ export interface TaskRecord {
   serverJobIds?: string[]
   /** 站内任务代理暂时不可达时是否等待自动恢复 */
   serverJobRecoverable?: boolean
+  /** 已成功服务端任务的结果读取次数，最多自动尝试 3 次 */
+  serverJobResultAttempts?: number
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */
   actualParams?: Partial<TaskParams>
   /** 输出图片对应的实际生效参数，key 为 outputImages 中的图片 id */
@@ -343,7 +345,9 @@ export interface ImageResponseItem {
 }
 
 export interface ImageApiResponse {
-  data: ImageResponseItem[]
+  data?: ImageResponseItem[]
+  url?: string
+  b64_json?: string
   size?: string
   quality?: string
   output_format?: string

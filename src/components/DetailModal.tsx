@@ -823,14 +823,14 @@ export default function DetailModal() {
                       handleRetry()
                     }}
                     className="inline-flex items-center justify-center rounded-full border border-blue-200/80 bg-white/80 px-3 py-1.5 text-blue-500 transition hover:bg-blue-50 dark:border-blue-400/20 dark:bg-white/[0.04] dark:hover:bg-blue-500/10"
-                    aria-label="重试任务"
+                    aria-label={task.serverJobIds?.length ? '重新读取已有结果' : '重试任务'}
                   >
                     <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
                   </button>
                   <ViewportTooltip visible={retryTooltip.visible} className="whitespace-nowrap">
-                    重试任务
+                    {task.serverJobIds?.length ? '重新读取已有结果' : '重试任务'}
                   </ViewportTooltip>
                 </div>
               </div>

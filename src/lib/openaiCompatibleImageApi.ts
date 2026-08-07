@@ -6,9 +6,11 @@ import {
   fetchWithServerImageJob,
   fetchServerImageJobResultImage,
   isServerImageJobRecoverableError,
+  isServerImageJobResultError,
   isServerImageJobTerminalError,
   isServerImageJobTerminalResponse,
   ServerImageJobRecoverableError,
+  ServerImageJobResultError,
   ServerImageJobTerminalError,
   type ServerImageJobRequestRef,
 } from './serverImageJobs'
@@ -453,12 +455,18 @@ function getUsefulUpstreamMessage(payload: unknown): string | undefined {
   return undefined
 }
 
-async function extractFallbackImages(payload: unknown, mime: string, signal?: AbortSignal): Promise<CallApiResult | null> {
-  const b64Images = uniqueStrings(
-    FALLBACK_B64_IMAGE_PATHS.flatMap((path) =>
+async function extractFallbackImages(
+  payload: unknown,
+  mime: string,
+  signal?: AbortSignal,
+  serverJob?: ServerImageJobRequestRef,
+): Promise<CallApiResult | null> {
+  const b64Images = uniqueStrings([
+    ...(typeof getByPath(payload, 'b64_json') === 'string' ? [getByPath(payload, 'b64_json') as string] : []),
+    ...FALLBACK_B64_IMAGE_PATHS.flatMap((path) =>
       getAllByPath(payload, path).filter(isLikelyBase64Image),
     ),
-  )
+  ])
   const imageUrls = uniqueStrings(
     FALLBACK_IMAGE_URL_PATHS.flatMap((path) =>
       getAllByPath(payload, path).filter((value): value is string => isHttpUrl(value) || isDataUrl(value)),
@@ -470,7 +478,12 @@ async function extractFallbackImages(payload: unknown, mime: string, signal?: Ab
   const images: string[] = []
   try {
     for (const b64 of b64Images) images.push(normalizeBase64Image(b64, mime))
-    for (const url of imageUrls) images.push(await fetchImageUrlAsDataUrl(url, mime, signal))
+    for (let index = 0; index < imageUrls.length; index += 1) {
+      const url = imageUrls[index]
+      images.push(serverJob && isHttpUrl(url)
+        ? await fetchServerImageJobResultImage(serverJob, index, mime, signal)
+        : await fetchImageUrlAsDataUrl(url, mime, signal))
+    }
   } catch (err) {
     if (rawImageUrls.length > 0 && err instanceof Error) {
       (err as any).rawImageUrls = rawImageUrls
@@ -503,7 +516,7 @@ async function parseImagesApiResponse(
 ): Promise<CallApiResult> {
   const data = payload.data
   if (!Array.isArray(data) || !data.length) {
-    const fallbackResult = await extractFallbackImages(payload, mime, signal)
+    const fallbackResult = await extractFallbackImages(payload, mime, signal, serverJob)
     if (fallbackResult) return fallbackResult
     throw createNoImageDataError(payload, UPSTREAM_EMPTY_IMAGE_RESPONSE_MESSAGE)
   }
@@ -536,18 +549,21 @@ async function parseImagesApiResponse(
   }
 
   if (!images.length) {
-    const fallbackResult = await extractFallbackImages(payload, mime, signal)
+    const fallbackResult = await extractFallbackImages(payload, mime, signal, serverJob)
     if (fallbackResult) return fallbackResult
     throw createNoImageDataError(payload, UPSTREAM_UNRECOGNIZED_IMAGE_RESPONSE_MESSAGE)
   }
 
+  const itemActualParams = data.map((item) => mergeActualParams(pickActualParams(item)))
   const actualParams = mergeActualParams(
     pickActualParams(payload),
+    itemActualParams[0],
+    images.length > 1 ? { n: images.length } : undefined,
   )
   return {
     images,
     actualParams,
-    actualParamsList: images.map(() => actualParams),
+    actualParamsList: images.map((_, index) => mergeActualParams(actualParams, itemActualParams[index])),
     revisedPrompts,
     ...(rawImageUrls.length ? { rawImageUrls } : {}),
   }
@@ -556,6 +572,7 @@ async function parseImagesApiResponse(
 function eventToImageResponseItem(event: Record<string, unknown>): ImageResponseItem {
   return {
     b64_json: getStringValue(event, 'b64_json'),
+    url: getStringValue(event, 'url'),
     revised_prompt: getStringValue(event, 'revised_prompt'),
     size: getStringValue(event, 'size'),
     quality: getStringValue(event, 'quality'),
@@ -607,23 +624,7 @@ async function parseImagesApiStreamResponse(
     throw new Error('流式接口未返回最终图片数据')
   }
 
-  const images = completedItems
-    .map((item) => item.b64_json)
-    .filter((b64): b64 is string => Boolean(b64))
-    .map((b64) => normalizeBase64Image(b64, mime))
-  if (!images.length) throw new Error('流式接口未返回可用图片数据')
-
-  const actualParamsList = completedItems.map((item) => mergeActualParams(pickActualParams(item)))
-  const actualParams = mergeActualParams(
-    actualParamsList[0],
-    images.length > 1 ? { n: images.length } : undefined,
-  )
-  return {
-    images,
-    actualParams,
-    actualParamsList,
-    revisedPrompts: completedItems.map((item) => item.revised_prompt),
-  }
+  return parseImagesApiResponse({ data: completedItems }, mime, undefined, serverJob)
 }
 
 function getResponsesStreamPayload(event: Record<string, unknown>): ResponsesApiResponse | null {
@@ -643,6 +644,7 @@ async function parseResponsesApiStreamResponse(
   mime: string,
   onPartialImage?: CallApiOptions['onPartialImage'],
   onActivity?: () => void,
+  serverJob?: ServerImageJobRequestRef,
 ): Promise<CallApiResult> {
   let completedPayload: ResponsesApiResponse | null = null
   const outputItems: ResponsesOutputItem[] = []
@@ -682,7 +684,10 @@ async function parseResponsesApiStreamResponse(
     ? parseImagesApiResponse({
       ...completedImageApiItems[0],
       ...(completedImageApiItems.length > 1 ? { data: completedImageApiItems } : {}),
-    } as ImageApiResponse, mime).catch(() => null)
+    } as ImageApiResponse, mime, undefined, serverJob).catch((err) => {
+      if (isServerImageJobResultError(err)) throw err
+      return null
+    })
     : Promise.resolve(null)
   if (!payload) {
     const fallbackResult = await parseImageApiFallback()
@@ -761,7 +766,9 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   )
 
   const recoverableFailure = results.find(
-    (result): result is PromiseRejectedResult => result.status === 'rejected' && isServerImageJobRecoverableError(result.reason),
+    (result): result is PromiseRejectedResult => result.status === 'rejected' && (
+      isServerImageJobRecoverableError(result.reason) || isServerImageJobResultError(result.reason)
+    ),
   )
   if (recoverableFailure) throw recoverableFailure.reason
 
@@ -993,8 +1000,10 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, re
     return await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal, serverJobRef)
   } catch (err) {
     if ((existingJob || serverJobCreated) && !isServerImageJobTerminalError(err)) {
-      if (isServerImageJobRecoverableError(err)) throw err
-      throw new ServerImageJobRecoverableError('服务端任务结果尚未能在本地完成读取，可稍后继续获取同一个任务。', err)
+      if (isServerImageJobRecoverableError(err) || isServerImageJobResultError(err)) throw err
+      const resultError = new ServerImageJobResultError('结果格式无法识别。', 'result_image_not_available', false, err)
+      if (err instanceof Error && 'rawResponsePayload' in err) (resultError as any).rawResponsePayload = (err as any).rawResponsePayload
+      throw resultError
     }
     throw err
   } finally {
@@ -1457,7 +1466,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       return await parseResponsesApiStreamResponse(response, mime, opts.onPartialImage, () => {
         timeout.reset()
         opts.onStreamActivity?.()
-      })
+      }, serverJobRef)
     }
 
     const payload = await response.json() as ResponsesApiResponse
@@ -1465,8 +1474,11 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     try {
       imageResults = parseResponsesImageResults(payload, mime)
     } catch (err) {
-      const fallbackResult = await parseImagesApiResponse(payload as ImageApiResponse, mime, controller.signal, serverJobRef).catch(() => null)
-      if (fallbackResult) return fallbackResult
+      try {
+        return await parseImagesApiResponse(payload as ImageApiResponse, mime, controller.signal, serverJobRef)
+      } catch (fallbackErr) {
+        if (isServerImageJobResultError(fallbackErr)) throw fallbackErr
+      }
       throw err
     }
     const actualParams = mergeActualParams(
@@ -1482,8 +1494,10 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     }
   } catch (err) {
     if ((existingJob || serverJobCreated) && !isServerImageJobTerminalError(err)) {
-      if (isServerImageJobRecoverableError(err)) throw err
-      throw new ServerImageJobRecoverableError('服务端任务结果尚未能在本地完成读取，可稍后继续获取同一个任务。', err)
+      if (isServerImageJobRecoverableError(err) || isServerImageJobResultError(err)) throw err
+      const resultError = new ServerImageJobResultError('结果格式无法识别。', 'result_image_not_available', false, err)
+      if (err instanceof Error && 'rawResponsePayload' in err) (resultError as any).rawResponsePayload = (err as any).rawResponsePayload
+      throw resultError
     }
     throw err
   } finally {

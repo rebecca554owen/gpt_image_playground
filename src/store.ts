@@ -66,7 +66,7 @@ import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { hasActiveDataOperations } from './lib/dataOperations'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, createExportBlob, getExportImageEstimatedBytes, getExportZipPlan, MAX_EXPORT_ZIP_BYTES, readExportZip, readExportZipFileAsDataUrl, readExportZipManifest } from './lib/exportZip'
-import { isServerImageJobRecoverableError, isServerImageJobTerminalError, ServerImageJobRecoverableError, ServerImageJobTerminalError, type ServerImageJobRequestRef } from './lib/serverImageJobs'
+import { isServerImageJobRecoverableError, isServerImageJobResultError, isServerImageJobTerminalError, ServerImageJobRecoverableError, ServerImageJobTerminalError, type ServerImageJobRequestRef } from './lib/serverImageJobs'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -87,6 +87,8 @@ const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
 const SERVER_JOB_RECOVERY_POLL_MS = 10_000
+const SERVER_JOB_RESULT_RETRY_DELAY_MS = 2_000
+const SERVER_JOB_RESULT_MAX_ATTEMPTS = 3
 const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const AGENT_INPUT_DRAFT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
 const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
@@ -4287,6 +4289,7 @@ async function executeAgentRound(
         error: null,
         serverJobIds: undefined,
         serverJobRecoverable: false,
+        serverJobResultAttempts: undefined,
         finishedAt: Date.now(),
         elapsed: Date.now() - latestBeforeUpdate.createdAt,
         agentToolAction: image.action,
@@ -4361,6 +4364,36 @@ async function executeAgentRound(
       if (!latestTask || latestTask.status !== 'running') return false
 
       if (latestTask.serverJobIds?.length) {
+        if (isServerImageJobResultError(err)) {
+          const attempts = (latestTask.serverJobResultAttempts ?? 0) + 1
+          const shouldRetry = err.retryable && attempts < SERVER_JOB_RESULT_MAX_ATTEMPTS
+          useStore.getState().setTaskStreamPreview(taskId)
+          const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, {
+            status: 'error',
+            error: err.message,
+            ...getRawErrorPayload(err),
+            serverJobRecoverable: shouldRetry,
+            serverJobResultAttempts: attempts,
+            finishedAt: Date.now(),
+            elapsed: Date.now() - latestTask.createdAt,
+          }).catch((persistErr) => {
+            console.warn('保存 Agent 服务端任务取图状态失败', persistErr)
+            return null
+          })
+          if (!persisted) {
+            useStore.getState().setTasks(useStore.getState().tasks.map((task) => task.id === taskId ? {
+              ...task,
+              status: 'error',
+              error: err.message,
+              serverJobRecoverable: shouldRetry,
+              serverJobResultAttempts: attempts,
+            } : task))
+          }
+          if (shouldRetry && (!persisted || persisted.committed)) {
+            scheduleServerJobRecovery(taskId, SERVER_JOB_RESULT_RETRY_DELAY_MS)
+          }
+          return true
+        }
         if (isServerImageJobTerminalError(err)) return false
         if (!isServerImageJobRecoverableError(err) && !isNetworkRecoverableError(err)) {
           console.warn('服务端任务结果的本地处理失败，将保留原任务以便恢复', err)
@@ -5405,6 +5438,7 @@ async function executeTask(taskId: string) {
       customRecoverable: false,
       serverJobIds: undefined,
       serverJobRecoverable: false,
+      serverJobResultAttempts: undefined,
     }
     if (serverJobRefs.length > 0) {
       const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, completionPatch)
@@ -5444,7 +5478,39 @@ async function executeTask(taskId: string) {
       ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
       : null)
     const latestCustomTaskInfo = customTaskInfo ?? (latestTask.customTaskId ? { taskId: latestTask.customTaskId } : null)
-    if (serverJobRefs.length > 0 && isServerImageJobTerminalError(err)) {
+    if (serverJobRefs.length > 0 && isServerImageJobResultError(err)) {
+      const attempts = (latestTask.serverJobResultAttempts ?? 0) + 1
+      const shouldRetry = err.retryable && attempts < SERVER_JOB_RESULT_MAX_ATTEMPTS
+      const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, {
+        status: 'error',
+        error: err.message,
+        ...getRawErrorPayload(err),
+        serverJobIds: serverJobRefs.sort((a, b) => a.requestIndex - b.requestIndex).map((ref) => ref.jobId),
+        serverJobRecoverable: shouldRetry,
+        serverJobResultAttempts: attempts,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      }).catch((persistErr) => {
+        console.warn('保存服务端任务取图状态失败', persistErr)
+        return null
+      })
+      if (!persisted) {
+        useStore.getState().setTasks(useStore.getState().tasks.map((item) => item.id === taskId ? {
+          ...item,
+          status: 'error',
+          error: err.message,
+          serverJobRecoverable: shouldRetry,
+          serverJobResultAttempts: attempts,
+          finishedAt: Date.now(),
+          elapsed: Date.now() - task.createdAt,
+        } : item))
+      }
+      if (shouldRetry && (!persisted || persisted.committed)) {
+        scheduleServerJobRecovery(taskId, SERVER_JOB_RESULT_RETRY_DELAY_MS)
+      } else {
+        useStore.getState().setDetailTaskId(taskId)
+      }
+    } else if (serverJobRefs.length > 0 && isServerImageJobTerminalError(err)) {
       const errorMessage = normalizeImageApiErrorMessage(err instanceof Error ? err.message : String(err))
       const persisted = await persistTaskPatchBeforeServerJobCleanup(taskId, {
         status: 'error',
@@ -5788,6 +5854,22 @@ async function startRetryTask(task: TaskRecord) {
 
 /** 重试失败的任务：创建新任务并执行 */
 export async function retryTask(task: TaskRecord, options: { skipPotentialDuplicateConfirm?: boolean } = {}) {
+  if (task.serverJobIds?.length) {
+    clearServerJobRecoveryTimer(task.id)
+    const updated = {
+      ...task,
+      status: 'running' as const,
+      error: null,
+      serverJobRecoverable: false,
+      serverJobResultAttempts: 0,
+      finishedAt: null,
+    }
+    useStore.getState().setTasks(useStore.getState().tasks.map((item) => item.id === task.id ? updated : item))
+    await putTask(updated)
+    await executeTask(task.id)
+    return
+  }
+
   if (!options.skipPotentialDuplicateConfirm && isPotentiallyBillableNetworkDisconnectTask(task)) {
     useStore.getState().setConfirmDialog({
       title: '确认重新提交？',

@@ -35,7 +35,20 @@ const SERVER_JOB_ERROR_MESSAGES: Record<string, string> = {
   outcome_unknown_upstream_timeout: '任务发出后等待上游超过服务端最长时间，无法确认最终结果，且可能已经产生扣费。本站不会自动重试，请先检查账户记录。',
   queue_full: '当前生成队列已满，任务尚未提交到上游，请稍后重试。',
   request_storage_error: '任务请求未能安全保存，尚未提交到上游，请重试。',
+  invalid_result_image_redirect: '图片 CDN 返回了不安全或无效的跳转地址。',
+  invalid_result_image_type: '结果地址返回的内容不是图片。',
+  invalid_result_image_url: '结果格式无法识别。',
+  result_image_download_failed: '图片 CDN 暂时不可访问。',
+  result_image_host_not_allowed: '图片域名未获允许。',
+  result_image_not_available: '结果格式无法识别。',
+  result_image_timeout: '图片 CDN 暂时不可访问。',
+  result_image_too_large: '图片过大，无法安全读取。',
 }
+
+const RETRYABLE_RESULT_IMAGE_ERROR_CODES = new Set([
+  'result_image_download_failed',
+  'result_image_timeout',
+])
 
 type ServerImageJobStatus = 'receiving' | 'queued' | 'dispatch_reserved' | 'running' | 'succeeded' | 'failed' | 'unknown'
 
@@ -63,6 +76,20 @@ export class ServerImageJobTerminalError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message)
     this.name = 'ServerImageJobTerminalError'
+    this.cause = cause
+  }
+}
+
+export class ServerImageJobResultError extends Error {
+  readonly cause?: unknown
+  readonly code: string | null
+  readonly retryable: boolean
+
+  constructor(message: string, code: string | null, retryable: boolean, cause?: unknown) {
+    super(message)
+    this.name = 'ServerImageJobResultError'
+    this.code = code
+    this.retryable = retryable
     this.cause = cause
   }
 }
@@ -242,6 +269,10 @@ export function isServerImageJobRecoverableError(err: unknown) {
   return err instanceof Error && err.name === 'ServerImageJobRecoverableError'
 }
 
+export function isServerImageJobResultError(err: unknown): err is ServerImageJobResultError {
+  return err instanceof Error && err.name === 'ServerImageJobResultError'
+}
+
 export function isServerImageJobTerminalResponse(response: Response) {
   return response.headers.get(SERVER_IMAGE_JOB_RESULT_HEADER) === 'terminal'
 }
@@ -322,8 +353,15 @@ export async function fetchServerImageJobResultImage(
     cache: 'no-store',
     signal,
   }).catch((err) => {
-    throw createJobNetworkError(err, '服务端生成结果中的图片下载中断，可稍后继续查看原任务。')
+    throw new ServerImageJobResultError('图片 CDN 暂时不可访问。', null, true, err)
   })
-  if (!response.ok) throw await createJobHttpError(response, `生成结果图片读取失败：HTTP ${response.status}`)
+  if (!response.ok) {
+    const error = await readServerJobError(response, `生成结果图片读取失败：HTTP ${response.status}`)
+    throw new ServerImageJobResultError(
+      error.message,
+      error.code,
+      Boolean(error.code && RETRYABLE_RESULT_IMAGE_ERROR_CODES.has(error.code)) || (!error.code && isRecoverableStatus(response.status)),
+    )
+  }
   return blobToDataUrl(await response.blob(), fallbackMime)
 }

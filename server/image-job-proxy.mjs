@@ -26,6 +26,8 @@ const NON_RETRYABLE_UPSTREAM_MARKERS = [
 const ENCRYPTED_FILE_HEADER = Buffer.from('IJ01')
 const ENCRYPTED_FILE_HEADER_BYTES = ENCRYPTED_FILE_HEADER.length + 12
 const AUTH_TAG_BYTES = 16
+const RESULT_IMAGE_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+const MAX_RESULT_IMAGE_REDIRECTS = 4
 
 class HttpError extends Error {
   constructor(status, code) {
@@ -471,6 +473,20 @@ export const createImageJobProxy = (options = {}) => {
         maxAttempts: entry.maxAttempts ?? null,
         retryReason: entry.retryReason ?? null,
         retryDelayMs: entry.retryDelayMs ?? null,
+      })
+    } catch {}
+  }
+
+  const logResultImage = (entry) => {
+    try {
+      logger({
+        jobId: entry.jobId,
+        upstreamRequestId: safeRequestId(entry.upstreamRequestId),
+        responseShape: entry.responseShape ?? null,
+        imageHostname: entry.imageHostname ?? null,
+        imageStatus: entry.imageStatus ?? null,
+        failureStage: entry.failureStage ?? null,
+        errorCode: entry.errorCode ?? null,
       })
     } catch {}
   }
@@ -1002,70 +1018,116 @@ export const createImageJobProxy = (options = {}) => {
 
       const row = requireJob(id, token)
       if (req.method === 'GET' && resultImageIndex !== null) {
-        if (!row.result_file || !row.result_meta_file) throw new HttpError(409, 'result_not_available')
-        const meta = await readEncryptedJson(row.result_meta_file, key)
-        if (!String(meta.contentType || '').toLowerCase().includes('json')) {
-          throw new HttpError(404, 'result_image_not_available')
-        }
-        const payload = await readEncryptedJson(row.result_file, key, Math.min(config.maxResultBytes, 1024 * 1024))
-        const imageUrl = payload?.data?.[resultImageIndex]?.url
-        if (typeof imageUrl !== 'string') throw new HttpError(404, 'result_image_not_available')
-
-        let target
+        let upstreamRequestId = null
+        let responseShape = null
+        let imageHostname = null
+        let imageStatus = null
+        let failureStage = 'result_parse'
         try {
-          target = new URL(imageUrl)
-        } catch {
-          throw new HttpError(502, 'invalid_result_image_url')
-        }
-        const host = target.hostname.toLowerCase()
-        if (
-          !['http:', 'https:'].includes(target.protocol)
-          || target.username
-          || target.password
-          || target.hash
-          || !isAllowedResultImageHost(host, config.resultImageHosts)
-        ) {
-          throw new HttpError(502, 'result_image_host_not_allowed')
-        }
+          if (!row.result_file || !row.result_meta_file) throw new HttpError(409, 'result_not_available')
+          const meta = await readEncryptedJson(row.result_meta_file, key)
+          upstreamRequestId = meta.upstreamRequestId
+          if (!String(meta.contentType || '').toLowerCase().includes('json')) {
+            throw new HttpError(404, 'result_image_not_available')
+          }
+          const payload = await readEncryptedJson(row.result_file, key, Math.min(config.maxResultBytes, 1024 * 1024))
+          const dataImageUrl = payload?.data?.[resultImageIndex]?.url
+          const topLevelImageUrl = resultImageIndex === 0 ? payload?.url : null
+          const imageUrl = typeof dataImageUrl === 'string' ? dataImageUrl : topLevelImageUrl
+          responseShape = typeof dataImageUrl === 'string'
+            ? 'data_url'
+            : typeof topLevelImageUrl === 'string'
+              ? 'top_level_url'
+              : 'unrecognized'
+          if (typeof imageUrl !== 'string') throw new HttpError(404, 'result_image_not_available')
 
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), config.resultImageTimeoutMs)
-        timeout.unref()
-        const abortOnClose = () => {
-          if (!res.writableEnded) controller.abort()
-        }
-        res.once('close', abortOnClose)
-        try {
-          const response = await fetch(target, { redirect: 'manual', signal: controller.signal })
-          if (!response.ok || !response.body) throw new HttpError(502, 'result_image_download_failed')
-          const contentType = response.headers.get('content-type') || 'application/octet-stream'
-          if (!contentType.toLowerCase().startsWith('image/')) throw new HttpError(502, 'invalid_result_image_type')
-          const lengthHeader = response.headers.get('content-length')
-          const length = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : null
-          if (length !== null && (!Number.isSafeInteger(length) || length > config.maxResultBytes)) {
-            throw new HttpError(413, 'result_image_too_large')
+          let target
+          try {
+            target = new URL(imageUrl)
+          } catch {
+            throw new HttpError(502, 'invalid_result_image_url')
           }
 
-          let size = 0
-          const limiter = new Transform({
-            transform(chunk, _encoding, callback) {
-              size += chunk.length
-              if (size > config.maxResultBytes) {
-                callback(new HttpError(413, 'result_image_too_large'))
-                return
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), config.resultImageTimeoutMs)
+          timeout.unref()
+          const abortOnClose = () => {
+            if (!res.writableEnded) controller.abort()
+          }
+          res.once('close', abortOnClose)
+          try {
+            let response
+            for (let redirectCount = 0; redirectCount <= MAX_RESULT_IMAGE_REDIRECTS; redirectCount += 1) {
+              imageHostname = target.hostname.toLowerCase()
+              if (
+                !['http:', 'https:'].includes(target.protocol)
+                || target.username
+                || target.password
+                || target.hash
+                || !isAllowedResultImageHost(imageHostname, config.resultImageHosts)
+              ) {
+                throw new HttpError(502, 'result_image_host_not_allowed')
               }
-              callback(null, chunk)
-            },
+
+              failureStage = 'image_download'
+              response = await fetch(target, { redirect: 'manual', signal: controller.signal })
+              imageStatus = response.status
+              if (!RESULT_IMAGE_REDIRECT_STATUSES.has(response.status)) break
+              if (redirectCount === MAX_RESULT_IMAGE_REDIRECTS) throw new HttpError(502, 'invalid_result_image_redirect')
+              const location = response.headers.get('location')
+              if (!location) throw new HttpError(502, 'invalid_result_image_redirect')
+              try {
+                target = new URL(location, target)
+              } catch {
+                throw new HttpError(502, 'invalid_result_image_redirect')
+              }
+            }
+
+            if (!response?.ok || !response.body) throw new HttpError(502, 'result_image_download_failed')
+            const contentType = response.headers.get('content-type') || 'application/octet-stream'
+            if (!contentType.toLowerCase().startsWith('image/')) throw new HttpError(502, 'invalid_result_image_type')
+            const lengthHeader = response.headers.get('content-length')
+            const length = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : null
+            if (length !== null && (!Number.isSafeInteger(length) || length > config.maxResultBytes)) {
+              throw new HttpError(413, 'result_image_too_large')
+            }
+
+            let size = 0
+            const limiter = new Transform({
+              transform(chunk, _encoding, callback) {
+                size += chunk.length
+                if (size > config.maxResultBytes) {
+                  callback(new HttpError(413, 'result_image_too_large'))
+                  return
+                }
+                callback(null, chunk)
+              },
+            })
+            res.writeHead(200, {
+              'cache-control': 'no-store',
+              'content-type': contentType,
+              ...(length !== null ? { 'content-length': length } : {}),
+            })
+            await pipeline(Readable.fromWeb(response.body), limiter, res)
+            logResultImage({ jobId: id, upstreamRequestId, responseShape, imageHostname, imageStatus })
+          } catch (err) {
+            if (controller.signal.aborted && !res.destroyed) throw new HttpError(504, 'result_image_timeout')
+            throw err
+          } finally {
+            clearTimeout(timeout)
+            res.off('close', abortOnClose)
+          }
+        } catch (err) {
+          logResultImage({
+            jobId: id,
+            upstreamRequestId,
+            responseShape,
+            imageHostname,
+            imageStatus,
+            failureStage,
+            errorCode: err instanceof HttpError ? err.code : 'internal_error',
           })
-          res.writeHead(200, {
-            'cache-control': 'no-store',
-            'content-type': contentType,
-            ...(length !== null ? { 'content-length': length } : {}),
-          })
-          await pipeline(Readable.fromWeb(response.body), limiter, res)
-        } finally {
-          clearTimeout(timeout)
-          res.off('close', abortOnClose)
+          throw err
         }
         return
       }

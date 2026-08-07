@@ -641,7 +641,7 @@ export default function TaskCard({
             >
               {((task.status === 'error' && !isReconnecting) || settings.alwaysShowRetryButton) && (
                 <TaskActionButton
-                  tooltip="重试任务"
+                  tooltip={task.serverJobIds?.length ? '重新读取已有结果' : '重试任务'}
                   onClick={() => retryTask(task)}
                   className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
                 >

@@ -356,6 +356,109 @@ test('已保存的图片 URL 可通过任务凭证同源下载', async () => {
   assert.equal(forbidden.status, 403)
 })
 
+test('图片编辑的顶层 URL 结果通过任务代理下载且日志不包含签名 URL', async () => {
+  const expected = Buffer.from('top-level-4k-image')
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url?.startsWith('/top-level.png')) {
+      res.writeHead(200, { 'content-type': 'image/png', 'x-secret-url': req.url })
+      res.end(expected)
+      return
+    }
+    await readRequest(req)
+    const port = req.socket.localPort
+    res.writeHead(200, { 'content-type': 'application/json', 'x-request-id': 'req-top-level' })
+    res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/top-level.png?signature=must-not-log` }))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  const id = randomUUID()
+  const token = randomUUID()
+  assert.equal((await putJob(fixture, { id, token, upstreamPath: 'images/edits' })).status, 202)
+  assert.equal((await waitForTerminal(fixture, id, token)).status, 'succeeded')
+
+  const result = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': token },
+  })
+  assert.equal(result.status, 200)
+  assert.deepEqual(Buffer.from(await result.arrayBuffer()), expected)
+  const imageLog = fixture.logs.find((entry) => entry.responseShape === 'top_level_url')
+  assert.deepEqual(Object.keys(imageLog).sort(), [
+    'errorCode',
+    'failureStage',
+    'imageHostname',
+    'imageStatus',
+    'jobId',
+    'responseShape',
+    'upstreamRequestId',
+  ])
+  assert.equal(imageLog.imageHostname, '127.0.0.1')
+  assert.equal(JSON.stringify(imageLog).includes('signature'), false)
+})
+
+test('结果图片下载逐跳校验域名并拒绝非图片、超大和超时响应', async () => {
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url === '/redirect-ok') {
+      res.writeHead(302, { location: '/image.png' })
+      res.end()
+      return
+    }
+    if (req.url === '/redirect-bad') {
+      res.writeHead(302, { location: `http://localhost:${req.socket.localPort}/image.png` })
+      res.end()
+      return
+    }
+    if (req.url === '/image.png') {
+      res.writeHead(200, { 'content-type': 'image/png' })
+      res.end('image')
+      return
+    }
+    if (req.url === '/not-image') {
+      res.writeHead(200, { 'content-type': 'text/html' })
+      res.end('<html></html>')
+      return
+    }
+    if (req.url === '/too-large') {
+      res.writeHead(200, { 'content-length': '1025', 'content-type': 'image/png' })
+      res.end(Buffer.alloc(1025))
+      return
+    }
+    if (req.url === '/slow') {
+      await new Promise((resolve) => setTimeout(resolve, 1100))
+      res.writeHead(200, { 'content-type': 'image/png' })
+      res.end('late')
+      return
+    }
+    const body = JSON.parse((await readRequest(req)).toString())
+    const port = req.socket.localPort
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/${body.prompt}` }))
+  }, {
+    IMAGE_JOB_MAX_RESULT_BYTES: '1024',
+    IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1',
+    IMAGE_JOB_RESULT_IMAGE_TIMEOUT_MS: '1000',
+  })
+
+  const readImage = async (pathName) => {
+    const id = randomUUID()
+    const token = randomUUID()
+    assert.equal((await putJob(fixture, { id, token, body: JSON.stringify({ prompt: pathName }) })).status, 202)
+    assert.equal((await waitForTerminal(fixture, id, token)).status, 'succeeded')
+    return fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, { headers: { 'x-task-token': token } })
+  }
+
+  assert.equal((await readImage('redirect-ok')).status, 200)
+  const redirectBad = await readImage('redirect-bad')
+  assert.equal(redirectBad.status, 502)
+  assert.deepEqual(await redirectBad.json(), { error: 'result_image_host_not_allowed' })
+  const notImage = await readImage('not-image')
+  assert.equal(notImage.status, 502)
+  assert.deepEqual(await notImage.json(), { error: 'invalid_result_image_type' })
+  const tooLarge = await readImage('too-large')
+  assert.equal(tooLarge.status, 413)
+  assert.deepEqual(await tooLarge.json(), { error: 'result_image_too_large' })
+  const timeout = await readImage('slow')
+  assert.equal(timeout.status, 504)
+  assert.deepEqual(await timeout.json(), { error: 'result_image_timeout' })
+})
+
 test('结果图片域名仅匹配精确主机或配置的子域后缀', () => {
   const rules = new Set(['imagefil.scdn.app', '*.000000033.xyz'])
   assert.equal(isAllowedResultImageHost('imagefil.scdn.app', rules), true)

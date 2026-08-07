@@ -167,7 +167,7 @@ import { clearAgentConversations, clearImages, clearTasks, commitServerImageJobR
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { callImageApi } from './lib/api'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
-import { ServerImageJobRecoverableError, ServerImageJobTerminalError } from './lib/serverImageJobs'
+import { ServerImageJobRecoverableError, ServerImageJobResultError, ServerImageJobTerminalError } from './lib/serverImageJobs'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getApiRequestNetworkErrorHint, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, isPotentiallyBillableNetworkDisconnectTask, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, retryTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
@@ -864,6 +864,67 @@ describe('server image job recovery', () => {
 
     expect(callImageApi).not.toHaveBeenCalled()
     expect(useStore.getState().tasks.some((item) => item.id === savedTask.id)).toBe(false)
+  })
+
+  it('stops a succeeded task after three transient result-image attempts', async () => {
+    const savedTask = recoverableTask('finite-result-recovery')
+    await commitServerImageJobRef(savedTask, ref(savedTask.id))
+    vi.mocked(callImageApi).mockRejectedValue(new ServerImageJobResultError(
+      '图片 CDN 暂时不可访问。',
+      'result_image_download_failed',
+      true,
+    ))
+
+    await initStore()
+    await flushRecovery()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(2_000)
+    for (let i = 0; i < 12; i += 1) await Promise.resolve()
+
+    expect(callImageApi).toHaveBeenCalledTimes(3)
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      serverImageJobs: [expect.objectContaining({ jobId: `${savedTask.id}-job` })],
+    }))
+    expect(useStore.getState().tasks.find((item) => item.id === savedTask.id)).toMatchObject({
+      status: 'error',
+      error: '图片 CDN 暂时不可访问。',
+      serverJobIds: [`${savedTask.id}-job`],
+      serverJobRecoverable: false,
+      serverJobResultAttempts: 3,
+    })
+    expect(await getServerImageJobRefs(savedTask.id)).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('manually rereads an existing completed job without creating a new task', async () => {
+    const savedTask = {
+      ...recoverableTask('manual-existing-result'),
+      serverJobRecoverable: false,
+      serverJobResultAttempts: 3,
+      error: '图片 CDN 暂时不可访问。',
+    }
+    await commitServerImageJobRef(savedTask, ref(savedTask.id))
+    useStore.setState({ tasks: [savedTask] })
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,recovered'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+
+    await retryTask(savedTask)
+
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      serverImageJobs: [expect.objectContaining({ jobId: `${savedTask.id}-job` })],
+    }))
+    expect(useStore.getState().tasks).toHaveLength(1)
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      id: savedTask.id,
+      status: 'done',
+      serverJobIds: undefined,
+      serverJobRecoverable: false,
+    })
   })
 })
 

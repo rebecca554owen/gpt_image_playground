@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import { callImageApi } from './api'
-import { isServerImageJobRecoverableError, isServerImageJobTerminalError } from './serverImageJobs'
+import { isServerImageJobRecoverableError, isServerImageJobResultError, isServerImageJobTerminalError } from './serverImageJobs'
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void
@@ -738,7 +738,51 @@ describe('callImageApi', () => {
     expect(imageCall?.[1]?.headers).toEqual({ 'X-Task-Token': 'token-b' })
   })
 
-  it('wraps an asynchronous stored Responses stream parsing failure as recoverable', async () => {
+  it('downloads a stored top-level URL result through the task service without calling the CDN', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      expect(url).not.toBe('https://download1.bnq777.xyz/signed-4k.png')
+      if (url.endsWith('/result-images/0')) {
+        return new Response(new Uint8Array([52, 107]), { headers: { 'Content-Type': 'image/png' } })
+      }
+      if (url.endsWith('/result')) {
+        return Response.json({ type: 'image_generation.completed', url: 'https://download1.bnq777.xyz/signed-4k.png' })
+      }
+      return Response.json({ id: 'top-url-job', status: 'succeeded', hasResult: true })
+    })
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'images' },
+      prompt: '4k edit',
+      params: { ...DEFAULT_PARAMS, size: '4096x4096' },
+      inputImageDataUrls: [],
+      serverImageJobs: [{ jobId: 'top-url-job', token: 'top-url-token', requestIndex: 0 }],
+    })
+
+    expect(result.images).toEqual(['data:image/png;base64,NGs='])
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/result-images/0'))).toHaveLength(1)
+  })
+
+  it('accepts a stored top-level Base64 result without an image download request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/result')) return Response.json({ b64_json: 'dG9wLWJhc2U2NA==' })
+      return Response.json({ id: 'top-b64-job', status: 'succeeded', hasResult: true })
+    })
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'images' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      serverImageJobs: [{ jobId: 'top-b64-job', token: 'top-b64-token', requestIndex: 0 }],
+    })
+
+    expect(result.images).toEqual(['data:image/png;base64,dG9wLWJhc2U2NA=='])
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/result-images/'))).toBe(false)
+  })
+
+  it('stops automatic recovery when a completed Responses stream has no image result', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       if (String(input).endsWith('/result')) {
         return new Response('data: {"type":"response.completed","response":{"output":[]}}\n\ndata: [DONE]\n\n', {
@@ -756,7 +800,9 @@ describe('callImageApi', () => {
       serverImageJobs: [{ jobId: 'stream-job', token: 'stream-token', requestIndex: 0 }],
     })
 
-    await expect(request).rejects.toSatisfy((err: unknown) => isServerImageJobRecoverableError(err))
+    await expect(request).rejects.toSatisfy((err: unknown) =>
+      isServerImageJobResultError(err) && !err.retryable && err.message === '结果格式无法识别。',
+    )
   })
 
   it('treats an empty saved-job list as a new Responses request', async () => {
