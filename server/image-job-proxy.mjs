@@ -28,6 +28,7 @@ const ENCRYPTED_FILE_HEADER_BYTES = ENCRYPTED_FILE_HEADER.length + 12
 const AUTH_TAG_BYTES = 16
 const RESULT_IMAGE_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const MAX_RESULT_IMAGE_REDIRECTS = 4
+const MAX_RESULT_IMAGE_JSON_BYTES = 64 * 1024 * 1024
 
 class HttpError extends Error {
   constructor(status, code) {
@@ -1030,7 +1031,7 @@ export const createImageJobProxy = (options = {}) => {
           if (!String(meta.contentType || '').toLowerCase().includes('json')) {
             throw new HttpError(404, 'result_image_not_available')
           }
-          const payload = await readEncryptedJson(row.result_file, key, Math.min(config.maxResultBytes, 1024 * 1024))
+          const payload = await readEncryptedJson(row.result_file, key, Math.min(config.maxResultBytes, MAX_RESULT_IMAGE_JSON_BYTES))
           const dataImageUrl = payload?.data?.[resultImageIndex]?.url
           const topLevelImageUrl = resultImageIndex === 0 ? payload?.url : null
           const imageUrl = typeof dataImageUrl === 'string' ? dataImageUrl : topLevelImageUrl

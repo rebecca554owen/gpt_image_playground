@@ -393,6 +393,34 @@ test('图片编辑的顶层 URL 结果通过任务代理下载且日志不包含
   assert.equal(JSON.stringify(imageLog).includes('signature'), false)
 })
 
+test('顶层 URL 与超过 1MB 的 Base64 同时返回时仍可下载原图', async () => {
+  const expected = Buffer.from('large-json-top-level-image')
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url === '/large-result.png') {
+      res.writeHead(200, { 'content-type': 'image/png' })
+      res.end(expected)
+      return
+    }
+    await readRequest(req)
+    const port = req.socket.localPort
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({
+      b64_json: 'a'.repeat(1024 * 1024 + 256 * 1024),
+      url: `http://127.0.0.1:${port}/large-result.png`,
+    }))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  const id = randomUUID()
+  const token = randomUUID()
+  assert.equal((await putJob(fixture, { id, token, upstreamPath: 'images/edits' })).status, 202)
+  assert.equal((await waitForTerminal(fixture, id, token)).status, 'succeeded')
+
+  const result = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': token },
+  })
+  assert.equal(result.status, 200)
+  assert.deepEqual(Buffer.from(await result.arrayBuffer()), expected)
+})
+
 test('结果图片下载逐跳校验域名并拒绝非图片、超大和超时响应', async () => {
   const fixture = await createFixture(async (req, res) => {
     if (req.url === '/redirect-ok') {
