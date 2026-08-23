@@ -1,5 +1,7 @@
 const CACHE_NAME = 'gpt-image-playground-v0.6.17'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
+const APP_SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.registration.scope).href))
+const ASSETS_PATH = new URL('./assets/', self.registration.scope).pathname
 const NETWORK_FIRST_DESTINATIONS = new Set(['script', 'style', 'worker'])
 const NETWORK_ONLY_PATH_PREFIXES = ['/api-proxy/', '/task-api/']
 
@@ -61,6 +63,8 @@ self.addEventListener('fetch', (event) => {
     )
     return
   }
+
+  if (!APP_SHELL_URLS.has(url.href) && !url.pathname.startsWith(ASSETS_PATH)) return
 
   event.respondWith(
     caches.match(request).then((cached) => {

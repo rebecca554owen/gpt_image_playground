@@ -416,17 +416,21 @@ export default function SettingsModal() {
     ? `已开启 ${enabledZipDownloadRouteCount} 项使用压缩包进行批量下载的途径`
     : '未开启任何使用压缩包进行批量下载的途径'
 
-  const agentTextProfiles = draft.profiles.filter(isAgentTextApiProfile)
+  const agentProfiles = draft.profiles.filter((profile) => {
+    if (!profile.apiKey.trim()) return false
+    if (profile.baseUrl.trim() || profile.provider === 'fal') return true
+    return apiProxyAvailable && isProfileApiProxyEligible(draft, profile) && (apiProxyLocked || profile.apiProxy)
+  })
+  const agentTextProfiles = agentProfiles.filter(isAgentTextApiProfile)
   const selectedAgentTextProfile = agentTextProfiles.find((profile) => profile.id === draft.agentTextProfileId)
-    ?? (isAgentTextApiProfile(activeProfile) ? activeProfile : agentTextProfiles[0])
     ?? null
-  const selectedAgentImageProfile = draft.profiles.find((profile) => profile.id === draft.agentImageProfileId)
-    ?? activeProfile
+  const selectedAgentImageProfile = agentProfiles.find((profile) => profile.id === draft.agentImageProfileId)
+    ?? null
   const agentTextProfileOptions = agentTextProfiles.map((profile) => ({
     label: `${profile.name} · ${profile.model || DEFAULT_RESPONSES_MODEL}`,
     value: profile.id,
   }))
-  const agentImageProfileOptions = draft.profiles.map((profile) => ({
+  const agentImageProfileOptions = agentProfiles.map((profile) => ({
     label: `${profile.name} · ${getApiProviderLabel(draft, profile.provider)} · ${profile.model}`,
     value: profile.id,
   }))
@@ -853,8 +857,18 @@ export default function SettingsModal() {
     commitSettings({
       ...draft,
       agentApiConfigMode: mode,
-      agentTextProfileId: mode !== 'off' ? selectedAgentTextProfile?.id ?? draft.agentTextProfileId : draft.agentTextProfileId,
-      agentImageProfileId: mode === 'hybrid' ? selectedAgentImageProfile?.id ?? draft.agentImageProfileId : draft.agentImageProfileId,
+      agentTextProfileId: mode !== 'off'
+        ? selectedAgentTextProfile?.id
+          ?? agentTextProfiles.find((profile) => profile.id === activeProfile.id)?.id
+          ?? agentTextProfiles[0]?.id
+          ?? draft.agentTextProfileId
+        : draft.agentTextProfileId,
+      agentImageProfileId: mode === 'hybrid'
+        ? selectedAgentImageProfile?.id
+          ?? agentProfiles.find((profile) => profile.id === activeProfile.id)?.id
+          ?? agentProfiles[0]?.id
+          ?? draft.agentImageProfileId
+        : draft.agentImageProfileId,
     })
   }
 
