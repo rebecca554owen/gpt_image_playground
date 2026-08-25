@@ -6,7 +6,7 @@ import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboar
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
-import { normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
+import { isThirdPartySimilarityPolicyError, normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
 import TaskCard from './TaskCard'
 import MarkdownRenderer from './MarkdownRenderer'
 import { TooltipButton as AgentActionButton } from './TooltipButton'
@@ -981,7 +981,7 @@ export default function AgentWorkspace() {
                     {round?.status === 'error' && isAssistant && message.content.startsWith('请求失败：') ? (
                       <div
                         data-selectable-text
-                        className="-m-2 flex cursor-copy select-text flex-col rounded-xl p-2 transition-colors hover:bg-red-50/60 dark:hover:bg-red-500/5"
+                        className={`-m-2 flex cursor-copy select-text flex-col rounded-2xl p-3 transition-colors ${isThirdPartySimilarityPolicyError(message.content) ? 'border border-amber-200/80 bg-amber-50/90 shadow-sm hover:bg-amber-100/70 dark:border-amber-400/20 dark:bg-amber-500/[0.08] dark:hover:bg-amber-500/[0.12]' : 'hover:bg-red-50/60 dark:hover:bg-red-500/5'}`}
                         title="点击复制完整报错"
                         onPointerDown={handleErrorCopyPointerDown}
                         onClick={(e) => handleErrorCopyClick(e, message.content)}
@@ -989,19 +989,35 @@ export default function AgentWorkspace() {
                         {(() => {
                           const content = normalizeImageApiErrorDisplayText(message.content).replace(/^请求失败：/, '');
                           const [mainErr, ...hints] = content.split('\n提示：');
+                          const isSimilarityPolicyError = isThirdPartySimilarityPolicyError(message.content);
                           return (
                             <>
-                              <div className="flex items-start gap-2 text-red-500 dark:text-red-400">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-[18px] h-[18px] mt-[1.5px] flex-shrink-0">
-                                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-                                </svg>
-                                <div className="whitespace-pre-wrap text-[14px] leading-relaxed break-words font-medium">
+                              {isSimilarityPolicyError && (
+                                <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.15em] text-amber-600/80 dark:text-amber-400/80">
+                                  <span className="h-px w-5 bg-amber-300/80 dark:bg-amber-400/30" />
+                                  内容保护提醒
+                                </div>
+                              )}
+                              <div className={`flex items-start gap-2.5 ${isSimilarityPolicyError ? 'text-amber-950 dark:text-amber-100' : 'text-red-500 dark:text-red-400'}`}>
+                                <span className={`mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full ${isSimilarityPolicyError ? 'bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400' : ''}`}>
+                                  {isSimilarityPolicyError ? (
+                                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 3l7 3v5c0 4.7-2.9 8-7 10-4.1-2-7-5.3-7-10V6l7-3z" />
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9.5 12l1.7 1.7 3.6-4" />
+                                    </svg>
+                                  ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-[18px] w-[18px]">
+                                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+                                    </svg>
+                                  )}
+                                </span>
+                                <div className="whitespace-pre-wrap break-words text-[14px] font-medium leading-relaxed">
                                   {mainErr}
                                 </div>
                               </div>
                               {hints.length > 0 && (
-                                <div className="pl-[26px] mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-gray-500 dark:text-gray-400 break-words opacity-90">
-                                  <span className="font-medium">提示：</span>{hints.join('\n提示：')}
+                                <div className={`mt-1.5 whitespace-pre-wrap break-words pl-[34px] text-[13px] leading-relaxed ${isSimilarityPolicyError ? 'text-amber-800/75 dark:text-amber-200/65' : 'text-gray-500 opacity-90 dark:text-gray-400'}`}>
+                                  <span className="font-semibold">处理建议：</span>{hints.join('\n提示：')}
                                 </div>
                               )}
                             </>

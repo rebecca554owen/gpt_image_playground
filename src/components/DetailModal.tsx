@@ -11,7 +11,7 @@ import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
-import { normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
+import { isThirdPartySimilarityPolicyError, normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
 import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
 
 import ViewportTooltip from './ViewportTooltip'
@@ -275,6 +275,7 @@ export default function DetailModal() {
   const outputCompressionText = task.params.output_compression == null ? '未设置' : String(task.params.output_compression)
   const displayError = normalizeImageApiErrorDisplayText(task.error || '生成失败')
   const [displayErrorMain, ...displayErrorHints] = displayError.split('\n提示：')
+  const isSimilarityPolicyError = isThirdPartySimilarityPolicyError(task.error || '')
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
@@ -715,18 +716,32 @@ export default function DetailModal() {
             </div>
           )}
           {task.status === 'error' && !isReconnecting && (
-            <div className="w-full max-w-md px-4 text-center">
-              <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <p className="text-sm font-medium leading-6 text-red-500 break-words">
-                {displayErrorMain}
-              </p>
-              {displayErrorHints.length > 0 && (
-                <p className="mt-1.5 text-xs leading-5 text-gray-500 dark:text-gray-400 break-words">
-                  <span className="font-medium">处理建议：</span>{displayErrorHints.join('\n提示：')}
+            <div className="w-full max-w-lg px-4 text-center">
+              <div className={isSimilarityPolicyError ? 'rounded-2xl border border-amber-200/80 bg-amber-50/90 px-5 py-4 shadow-sm dark:border-amber-400/20 dark:bg-amber-500/[0.08]' : ''}>
+                <div className={`mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full ${isSimilarityPolicyError ? 'bg-amber-100 text-amber-600 ring-4 ring-amber-50 dark:bg-amber-500/15 dark:text-amber-400 dark:ring-amber-500/5' : 'text-red-400'}`}>
+                  {isSimilarityPolicyError ? (
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 3l7 3v5c0 4.7-2.9 8-7 10-4.1-2-7-5.3-7-10V6l7-3z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9.5 12l1.7 1.7 3.6-4" />
+                    </svg>
+                  ) : (
+                    <svg className="h-10 w-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  )}
+                </div>
+                {isSimilarityPolicyError && (
+                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-600/80 dark:text-amber-400/80">内容保护提醒</p>
+                )}
+                <p className={`text-sm font-medium leading-6 break-words ${isSimilarityPolicyError ? 'text-amber-950 dark:text-amber-100' : 'text-red-500'}`}>
+                  {displayErrorMain}
                 </p>
-              )}
+                {displayErrorHints.length > 0 && (
+                  <p className={`mt-1.5 text-xs leading-5 break-words ${isSimilarityPolicyError ? 'text-amber-800/75 dark:text-amber-200/65' : 'text-gray-500 dark:text-gray-400'}`}>
+                    <span className="font-semibold">处理建议：</span>{displayErrorHints.join('\n提示：')}
+                  </p>
+                )}
+              </div>
               <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                 <div className="relative group">
                   <button
@@ -736,7 +751,7 @@ export default function DetailModal() {
                       copyErrorTooltip.handlers.onClick()
                       handleCopyError()
                     }}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10"
+                    className={`inline-flex items-center justify-center gap-1.5 rounded-full border bg-white/80 px-3 py-1.5 text-xs font-medium transition dark:bg-white/[0.04] ${isSimilarityPolicyError ? 'border-amber-200/80 text-amber-700 hover:bg-amber-50 dark:border-amber-400/20 dark:text-amber-300 dark:hover:bg-amber-500/10' : 'border-red-200/80 text-red-500 hover:bg-red-50 dark:border-red-400/20 dark:hover:bg-red-500/10'}`}
                     aria-label="复制完整报错"
                   >
                     <CopyIcon className="h-4 w-4" />

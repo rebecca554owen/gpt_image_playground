@@ -3,8 +3,11 @@ import {
   getApiErrorMessage,
   IMAGE_UNSAFE_ERROR_MESSAGE,
   INVALID_IMAGE_SIZE_ERROR_MESSAGE,
+  isThirdPartySimilarityPolicyError,
   normalizeImageApiErrorDisplayText,
   normalizeImageApiErrorMessage,
+  THIRD_PARTY_SIMILARITY_ERROR_HINT,
+  THIRD_PARTY_SIMILARITY_ERROR_MESSAGE,
   UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE,
 } from './imageApiShared'
 
@@ -31,6 +34,16 @@ describe('image API error messages', () => {
     expect(normalizeImageApiErrorMessage(
       'status_code=502, upstream did not return image output',
     )).toBe(UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE)
+  })
+
+  it('shows a dedicated reminder for third-party similarity protection', () => {
+    const upstreamMessage = 'status_code=400, 非常抱歉，生成的图片可能违反了关于与第三方内容相似性的防护限制。如果你认为此判断有误，请重试或修改提示语。 TraceId: test-trace'
+
+    expect(isThirdPartySimilarityPolicyError(upstreamMessage)).toBe(true)
+    expect(normalizeImageApiErrorDisplayText(upstreamMessage)).toBe(
+      `${THIRD_PARTY_SIMILARITY_ERROR_MESSAGE}\n提示：${THIRD_PARTY_SIMILARITY_ERROR_HINT}`,
+    )
+    expect(isThirdPartySimilarityPolicyError('HTTP 500 Internal Server Error')).toBe(false)
   })
 
   it('normalizes invalid image size errors with limit details', () => {

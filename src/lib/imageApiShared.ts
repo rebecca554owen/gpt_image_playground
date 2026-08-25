@@ -110,6 +110,8 @@ export function maybeAppendStreamingHint(message: string, status: number, stream
 }
 
 export const IMAGE_UNSAFE_ERROR_MESSAGE = '生成结果触发安全审核，请调整提示词或参考图后重试。'
+export const THIRD_PARTY_SIMILARITY_ERROR_MESSAGE = '生成内容可能与第三方作品过于相似。'
+export const THIRD_PARTY_SIMILARITY_ERROR_HINT = '这不是账户或线路故障。请减少对具体作品、品牌角色或艺术家风格的直接复刻，并调整参考图或描述后重试。'
 export const UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE = '上游服务没有返回图片结果，请稍后重试或调整提示词。'
 export const INVALID_IMAGE_SIZE_ERROR_MESSAGE = '图片尺寸超出服务商限制，请改小尺寸后重试。'
 
@@ -120,6 +122,10 @@ function payloadIncludes(value: unknown, pattern: RegExp): boolean {
   } catch {
     return false
   }
+}
+
+export function isThirdPartySimilarityPolicyError(message: string): boolean {
+  return payloadIncludes(message, /与第三方内容相似性的防护限制|third[- ]party content.{0,80}similar/i)
 }
 
 function getInvalidImageSizeErrorMessage(message: string): string | undefined {
@@ -139,6 +145,9 @@ function getInvalidImageSizeErrorMessage(message: string): string | undefined {
 export function normalizeImageApiErrorMessage(message: string): string {
   if (payloadIncludes(message, /\bimage_unsafe\b|generated images appear to be unsafe/i)) {
     return IMAGE_UNSAFE_ERROR_MESSAGE
+  }
+  if (isThirdPartySimilarityPolicyError(message)) {
+    return `${THIRD_PARTY_SIMILARITY_ERROR_MESSAGE}\n提示：${THIRD_PARTY_SIMILARITY_ERROR_HINT}`
   }
   if (payloadIncludes(message, /upstream did not return image output/i)) {
     return UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE
