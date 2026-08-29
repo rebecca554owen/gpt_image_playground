@@ -240,7 +240,7 @@ describe('server image jobs', () => {
   it.each([
     [502, 'result_image_download_failed', true, '图片 CDN 暂时不可访问。'],
     [504, 'result_image_timeout', true, '图片 CDN 暂时不可访问。'],
-    [502, 'result_image_host_not_allowed', false, '图片域名未获允许。'],
+    [502, 'result_image_host_not_allowed', false, '图片已生成，但图片域名未获允许。\n提示：请勿重复生成；请复制完整报错并提交工单，修复后可重新读取原任务。'],
     [413, 'result_image_too_large', false, '图片过大，无法安全读取。'],
     [404, 'result_image_not_available', false, '结果格式无法识别。'],
   ])('classifies result image error %s %s with finite retry metadata', async (status, code, retryable, message) => {

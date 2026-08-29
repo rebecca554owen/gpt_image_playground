@@ -6,6 +6,8 @@ import {
   isThirdPartySimilarityPolicyError,
   normalizeImageApiErrorDisplayText,
   normalizeImageApiErrorMessage,
+  RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_HINT,
+  RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_MESSAGE,
   THIRD_PARTY_SIMILARITY_ERROR_HINT,
   THIRD_PARTY_SIMILARITY_ERROR_MESSAGE,
   UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE,
@@ -44,6 +46,14 @@ describe('image API error messages', () => {
       `${THIRD_PARTY_SIMILARITY_ERROR_MESSAGE}\n提示：${THIRD_PARTY_SIMILARITY_ERROR_HINT}`,
     )
     expect(isThirdPartySimilarityPolicyError('HTTP 500 Internal Server Error')).toBe(false)
+  })
+
+  it('keeps a result host rejection distinct from a client network failure', () => {
+    const expected = `${RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_MESSAGE}\n提示：${RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_HINT}`
+
+    expect(normalizeImageApiErrorMessage('HTTP 502: result_image_host_not_allowed')).toBe(expected)
+    expect(normalizeImageApiErrorDisplayText('图片域名未获允许。')).toBe(expected)
+    expect(normalizeImageApiErrorDisplayText('HTTP 502: result_image_host_not_allowed')).not.toContain('网络连接已中断')
   })
 
   it('normalizes invalid image size errors with limit details', () => {

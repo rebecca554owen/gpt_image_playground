@@ -39,7 +39,7 @@ const SERVER_JOB_ERROR_MESSAGES: Record<string, string> = {
   invalid_result_image_type: '结果地址返回的内容不是图片。',
   invalid_result_image_url: '结果格式无法识别。',
   result_image_download_failed: '图片 CDN 暂时不可访问。',
-  result_image_host_not_allowed: '图片域名未获允许。',
+  result_image_host_not_allowed: '图片已生成，但图片域名未获允许。\n提示：请勿重复生成；请复制完整报错并提交工单，修复后可重新读取原任务。',
   result_image_not_available: '结果格式无法识别。',
   result_image_timeout: '图片 CDN 暂时不可访问。',
   result_image_too_large: '图片过大，无法安全读取。',
