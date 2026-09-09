@@ -74,6 +74,7 @@ export interface ApiProfile {
   baseUrl: string
   apiKey: string
   model: string
+  imageGenerationModel?: string
   timeout: number
   apiMode: ApiMode
   codexCli: boolean
@@ -81,7 +82,7 @@ export interface ApiProfile {
   responseFormatB64Json?: boolean
   streamImages?: boolean
   streamPartialImages?: number
-  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'apiMode' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages'>>>>
+  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'imageGenerationModel' | 'apiMode' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages'>>>>
 }
 
 export interface AppSettings {
@@ -121,7 +122,7 @@ export interface AppSettings {
 
 export interface TaskParams {
   size: string
-  quality: 'auto' | 'low' | 'medium' | 'high'
+  quality: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   output_format: 'png' | 'jpeg' | 'webp'
   output_compression: number | null
   moderation: 'auto' | 'low'

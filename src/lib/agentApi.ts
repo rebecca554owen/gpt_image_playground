@@ -1,5 +1,6 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { getImageGenerationModel } from './imageModels'
 import { appendStreamingFormatHint, maybeAppendStreamingHint, getApiErrorMessage, MIME_MAP, normalizeBase64Image, pickActualParams } from './imageApiShared'
 
 export interface AgentApiResultImage {
@@ -109,6 +110,8 @@ function createImageTool(params: TaskParams, profile: ApiProfile, maskDataUrl?: 
     moderation: params.moderation,
   }
 
+  const imageModel = getImageGenerationModel(profile)
+  if (imageModel) tool.model = imageModel
   tool.quality = params.quality
 
   if (params.output_format !== 'png' && params.output_compression != null) {
@@ -876,6 +879,8 @@ export async function callBatchImageSingle(opts: {
       moderation: params.moderation,
       quality: params.quality,
     }
+    const imageModel = getImageGenerationModel(profile)
+    if (imageModel) tool.model = imageModel
     if (params.output_format !== 'png' && params.output_compression != null) {
       tool.output_compression = params.output_compression
     }

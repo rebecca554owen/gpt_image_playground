@@ -1,5 +1,6 @@
 import { DEFAULT_PARAMS, type AppSettings, type TaskParams } from '../types'
 import { getActiveApiProfile } from './apiProfiles'
+import { getImageGenerationModel, isGptImage25Model } from './imageModels'
 import { normalizeImageSize } from './size'
 
 export const DEFAULT_FAL_IMAGE_SIZE = '1360x1024'
@@ -32,6 +33,10 @@ export function normalizeParamsForSettings(
     if (nextParams.quality === 'auto') nextParams.quality = 'high'
     nextParams.moderation = DEFAULT_PARAMS.moderation
     nextParams.output_compression = DEFAULT_PARAMS.output_compression
+  }
+
+  if ((nextParams.quality === 'xhigh' || nextParams.quality === 'max') && !isGptImage25Model(getImageGenerationModel(activeProfile))) {
+    nextParams.quality = 'high'
   }
 
   if (nextParams.output_format === 'png') {

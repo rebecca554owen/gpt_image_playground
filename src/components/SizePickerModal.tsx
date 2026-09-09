@@ -22,6 +22,7 @@ interface Props {
   onClose: () => void
   allowAuto?: boolean
   imageCount?: number
+  fourKBilling?: boolean
 }
 
 type Mode = 'auto' | 'ratio' | 'resolution'
@@ -44,7 +45,7 @@ function findPresetForSize(size: string) {
   return null
 }
 
-export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, imageCount = 1 }: Props) {
+export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, imageCount = 1, fourKBilling = true }: Props) {
   usePreventBackgroundScroll(true)
 
   const modalRef = useRef<HTMLDivElement>(null)
@@ -138,7 +139,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     return false
   }, [mode, ratio, customRatioClamped, customW, customH, previewSize])
 
-  const isFourKSelection = isFourKImageSize(previewSize)
+  const isFourKSelection = fourKBilling && isFourKImageSize(previewSize)
   const billedImageCount = Math.max(1, Math.trunc(imageCount) || 1)
 
   const showHint = () => setHintVisible(true)
@@ -170,7 +171,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   }
 
   const selectTier = (item: SizeTier) => {
-    if (item === '4K' && tier !== '4K') {
+    if (fourKBilling && item === '4K' && tier !== '4K') {
       setFourKAction('select')
       return
     }
@@ -274,12 +275,12 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                 <section>
                   <div className="mb-2 flex items-center justify-between gap-3">
                     <span className="text-xs font-medium text-gray-400 dark:text-gray-500">输出清晰度</span>
-                    <span className="text-[10px] text-gray-400 dark:text-gray-500">尺寸自动匹配模型</span>
+                    <span className="text-[10px] text-gray-400 dark:text-gray-500">{fourKBilling ? '尺寸自动匹配模型' : '使用所选模型'}</span>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     {TIERS.map((item) => {
                       const selected = tier === item
-                      const isFourK = item === '4K'
+                      const isFourK = fourKBilling && item === '4K'
                       return (
                         <button
                           key={item}
@@ -301,7 +302,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                           )}
                           <span className="block text-sm font-bold">{isFourK ? '4K 超清' : item}</span>
                           <span className={`mt-1 block text-[10px] leading-tight ${isFourK ? 'text-amber-700 dark:text-amber-300' : 'text-gray-400 dark:text-gray-500'}`}>
-                            {item === '1K' ? '快速预览 · 1×' : item === '2K' ? '标准出图 · 1×' : '高精交付 · 推荐'}
+                            {item === '1K' ? (fourKBilling ? '快速预览 · 1×' : '快速预览') : item === '2K' ? (fourKBilling ? '标准出图 · 1×' : '标准出图') : '高精交付 · 推荐'}
                           </span>
                         </button>
                       )

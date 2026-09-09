@@ -4,6 +4,21 @@ import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, 
 import { getOutputImageLimitForSettings, normalizeParamsForSettings } from './paramCompatibility'
 
 describe('parameter compatibility', () => {
+  it.each(['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'vendor/gpt-image-2.5-custom'])('keeps new quality levels for %s and downgrades them when switching to an older model', (model) => {
+    const profile = createDefaultOpenAIProfile({ model, codexCli: false })
+    const settings = normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile] })
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, quality: 'xhigh' }, settings).quality).toBe('xhigh')
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, quality: 'max' }, settings).quality).toBe('max')
+    const oldSettings = normalizeSettings({ ...settings, profiles: [{ ...profile, model: 'gpt-image-2' }] })
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, quality: 'max' }, oldSettings).quality).toBe('high')
+  })
+
+  it('uses the Responses image tool model to determine quality support', () => {
+    const profile = createDefaultOpenAIProfile({ apiMode: 'responses', model: 'text-model', imageGenerationModel: 'gpt-image-2.5-flare', codexCli: false })
+    const settings = normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile] })
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, quality: 'max' }, settings).quality).toBe('max')
+  })
+
   it('limits OpenAI output count to 10', () => {
     const openAIProfile = createDefaultOpenAIProfile({ apiKey: 'test-key', streamImages: false })
     const settings = normalizeSettings({

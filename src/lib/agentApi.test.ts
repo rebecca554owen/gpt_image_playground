@@ -47,6 +47,7 @@ describe('callAgentResponsesApi', () => {
       apiMode: 'responses',
       streamImages: true,
       streamPartialImages: 2,
+      imageGenerationModel: 'gpt-image-2.5-flare',
     })
 
     const result = await callAgentResponsesApi({
@@ -61,6 +62,7 @@ describe('callAgentResponsesApi', () => {
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
     expect(body.tools[0].partial_images).toBe(2)
+    expect(body.tools[0].model).toBe('gpt-image-2.5-flare')
     expect(body.tool_choice).toBeUndefined()
     expect(textDeltas).toEqual(['Hel', 'lo'])
     expect(result).toMatchObject({
@@ -188,6 +190,7 @@ describe('callAgentResponsesApi', () => {
         apiKey: 'test-key',
         apiMode: 'responses',
         codexCli,
+        imageGenerationModel: 'gpt-image-2.5-sunburst',
       })
 
       await callBatchImageSingle({
@@ -201,6 +204,7 @@ describe('callAgentResponsesApi', () => {
       const [, init] = fetchMock.mock.calls[0]
       const body = JSON.parse(String((init as RequestInit).body))
       expect(body.tools).toHaveLength(1)
+      expect(body.tools[0].model).toBe('gpt-image-2.5-sunburst')
       expect(body.tool_choice).toBe(codexCli ? undefined : 'required')
     },
   )

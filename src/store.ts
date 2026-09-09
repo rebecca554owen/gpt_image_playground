@@ -59,7 +59,7 @@ import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
-import { getImageModelForSize } from './lib/imageModelSelection'
+import { getImageModelForSize, isSizeManagedImageProfile } from './lib/imageModelSelection'
 import { isFourKImageSize } from './lib/size'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
@@ -2564,7 +2564,7 @@ export async function submitTask(options: { allowFullMask?: boolean; allowFourKB
   }
 
   const billedImageCount = Math.max(1, Math.trunc(params.n) || 1)
-  if (!options.allowFourKBilling && isFourKImageSize(params.size) && billedImageCount > 1) {
+  if (!options.allowFourKBilling && isSizeManagedImageProfile(activeProfile) && isFourKImageSize(params.size) && billedImageCount > 1) {
     setConfirmDialog({
       title: '确认多张 4K 计费',
       message: `本次将生成 **${billedImageCount} 张 4K 图片**，每张都按 **10× 费用**计费，合计约等于 **${billedImageCount * 10} 张 1K–2K 标准图费用**。\n\n请确认费用后再继续提交。`,

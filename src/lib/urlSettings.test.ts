@@ -20,6 +20,21 @@ async function importDefaultConfigOnlyUrlSettings() {
 }
 
 describe('URL settings params', () => {
+  it('imports and clears independent image tool model parameters without deduplicating different tool models', () => {
+    const current = normalizeSettings(DEFAULT_SETTINGS)
+    const query = new URLSearchParams('apiMode=responses&model=existing-text&imageGenerationModel=gpt-image-2.5-flare')
+    const next = normalizeSettings({ ...current, ...buildSettingsFromUrlParams(current, query) })
+    expect(next.profiles.find((item) => item.id === next.activeProfileId)).toMatchObject({
+      model: 'existing-text', imageGenerationModel: 'gpt-image-2.5-flare',
+    })
+    query.set('imageGenerationModel', 'gpt-image-2.5-sunburst')
+    const other = normalizeSettings({ ...next, ...buildSettingsFromUrlParams(next, query) })
+    expect(other.profiles).toHaveLength(next.profiles.length + 1)
+    expect(hasUrlSettingParams(new URLSearchParams('imageGenerationModel='))).toBe(true)
+    clearUrlSettingParams(query)
+    expect(query.has('imageGenerationModel')).toBe(false)
+  })
+
   it('creates and activates a new OpenAI profile for legacy URL params', () => {
     const current = normalizeSettings(DEFAULT_SETTINGS)
     const next = normalizeSettings({

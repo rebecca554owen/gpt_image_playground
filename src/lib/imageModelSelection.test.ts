@@ -3,6 +3,12 @@ import { createDefaultOpenAIProfile, DEFAULT_IMAGES_MODEL, FOUR_K_IMAGES_MODEL }
 import { getImageModelForSize } from './imageModelSelection'
 
 describe('getImageModelForSize', () => {
+  it.each(['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare', 'vendor/gpt-image-2.5-custom'])('preserves explicitly selected model %s at every resolution', (model) => {
+    const profile = createDefaultOpenAIProfile({ model })
+    expect(getImageModelForSize(profile, '1024x1024')).toBe(model)
+    expect(getImageModelForSize(profile, '3840x2160')).toBe(model)
+  })
+
   it('uses the standard model for 1K and 2K output', () => {
     const profile = createDefaultOpenAIProfile({ model: FOUR_K_IMAGES_MODEL })
 

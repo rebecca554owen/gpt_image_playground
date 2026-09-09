@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { DEFAULT_SETTINGS } from './apiProfiles'
+import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { callImageApi } from './api'
 import { isServerImageJobRecoverableError, isServerImageJobResultError, isServerImageJobTerminalError } from './serverImageJobs'
 
@@ -29,6 +29,49 @@ async function waitForCondition(assertion: () => void) {
 }
 
 describe('callImageApi', () => {
+  it.each(['gpt-image-2.5-sunburst', 'vendor/gpt-image-2.5-custom'])('sends model %s and max quality without replacing the selected model', async (model) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      data: [{ b64_json: 'aW1hZ2U=' }], quality: 'max',
+    }))
+    const profile = createDefaultOpenAIProfile({ model, codexCli: false, apiKey: 'test-key', streamImages: false })
+    const result = await callImageApi({
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile] }),
+      prompt: 'prompt', params: { ...DEFAULT_PARAMS, quality: 'max', size: '3840x2160' }, inputImageDataUrls: [],
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ model, quality: 'max', size: '3840x2160' })
+    expect(result.actualParams?.quality).toBe('max')
+  })
+
+  it('sends 2.5 quality and model in multipart image edits', async () => {
+    const originalFetch = globalThis.fetch
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) =>
+      String(input).startsWith('data:')
+        ? originalFetch(input, init)
+        : Promise.resolve(Response.json({ data: [{ b64_json: 'aW1hZ2U=' }] })),
+    )
+    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2.5-flare', codexCli: false, apiKey: 'test-key', streamImages: false })
+    await callImageApi({
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile] }),
+      prompt: 'edit', params: { ...DEFAULT_PARAMS, quality: 'xhigh' }, inputImageDataUrls: ['data:image/png;base64,aW1hZ2U='],
+    })
+    const body = fetchMock.mock.calls.find(([, init]) => init?.body instanceof FormData)?.[1]?.body as FormData
+    expect(body.get('model')).toBe('gpt-image-2.5-flare')
+    expect(body.get('quality')).toBe('xhigh')
+  })
+
+  it.each([undefined, '', 'gpt-image-2.5-flare'])('restores a Responses tool model %s without changing the text model', async (imageGenerationModel) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      output: [{ type: 'image_generation_call', result: 'aW1hZ2U=' }],
+    }))
+    const profile = createDefaultOpenAIProfile({ apiMode: 'responses', model: 'existing-text-model', imageGenerationModel, codexCli: false, apiKey: 'test-key', streamImages: false })
+    const settings = normalizeSettings(JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS, profiles: [profile] })))
+    await callImageApi({ settings, prompt: 'prompt', params: { ...DEFAULT_PARAMS, quality: 'max' }, inputImageDataUrls: [] })
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.model).toBe('existing-text-model')
+    if (imageGenerationModel) expect(body.tools[0]).toMatchObject({ model: imageGenerationModel, quality: 'max' })
+    else expect(body.tools[0]).not.toHaveProperty('model')
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllEnvs()

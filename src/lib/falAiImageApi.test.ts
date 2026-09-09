@@ -21,6 +21,17 @@ const falMock = fal as unknown as {
 }
 
 describe('callFalAiImageApi', () => {
+  it.each([false, true])('routes fal 2.5 requests to the correct endpoint (edit=%s) and preserves max quality', async (edit) => {
+    falMock.subscribe.mockResolvedValue({ requestId: 'req-25', data: { images: [{ b64_json: 'aW1hZ2U=' }] } })
+    await callFalAiImageApi({
+      settings: DEFAULT_SETTINGS, prompt: 'prompt', params: { ...DEFAULT_PARAMS, quality: 'max' },
+      inputImageDataUrls: edit ? ['data:image/png;base64,aW1hZ2U='] : [],
+    }, createDefaultFalProfile({ model: 'openai/gpt-image-2.5/sunburst', apiKey: 'test-key' }))
+    expect(falMock.subscribe).toHaveBeenCalledWith(`openai/gpt-image-2.5/sunburst/${edit ? 'edit' : 'text-to-image'}`, expect.objectContaining({
+      input: expect.objectContaining({ quality: 'max' }),
+    }))
+  })
+
   afterEach(() => {
     vi.clearAllMocks()
   })

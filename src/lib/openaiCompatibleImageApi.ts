@@ -2,6 +2,7 @@ import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefi
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
 import { runLimitedSettled } from './concurrency'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { getImageGenerationModel } from './imageModels'
 import {
   fetchWithServerImageJob,
   fetchServerImageJobResultImage,
@@ -218,6 +219,9 @@ function createResponsesImageTool(
     output_format: params.output_format,
     moderation: params.moderation,
   }
+
+  const imageModel = getImageGenerationModel(profile)
+  if (imageModel) tool.model = imageModel
 
   if (profile.streamImages) {
     tool.partial_images = getStreamPartialImages(profile)

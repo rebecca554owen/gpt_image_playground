@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { ALL_FAVORITES_COLLECTION_ID, deleteFavoriteCollection, getTaskFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, addImageFromFile, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { DEFAULT_PARAMS, type TaskRecord } from '../types'
 import { getActiveApiProfile, getAgentImageApiProfile, normalizeSettings } from '../lib/apiProfiles'
+import { getImageGenerationModel, isGptImage25Model } from '../lib/imageModels'
+import { isSizeManagedImageProfile } from '../lib/imageModelSelection'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
 import { getAtImageQuery, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, getSelectedImageMentionLabel, getSelectedTextMentionLabel, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
 import { normalizeImageSize } from '../lib/size'
@@ -649,6 +651,7 @@ export default function InputBar() {
   const suppressImageClickRef = useRef(false)
   const replaceImageTargetRef = useRef<{ index: number; id: string } | null>(null)
   const isUserInputRef = useRef(false)
+  const isComposingRef = useRef(false)
   const imageHintLockedRef = useRef(false)
   const imageHintReleaseRef = useRef<(() => void) | null>(null)
   const [cursorPos, setCursorPos] = useState(0)
@@ -786,18 +789,15 @@ export default function InputBar() {
     ? DEFAULT_FAL_IMAGE_SIZE
     : normalizeImageSize(params.size) || DEFAULT_PARAMS.size
 
-  const qualityOptions = isFalProvider
-    ? [
-        { label: 'low', value: 'low' },
-        { label: 'medium', value: 'medium' },
-        { label: 'high', value: 'high' },
-      ]
-    : [
-        { label: 'auto', value: 'auto' },
-        { label: 'low', value: 'low' },
-        { label: 'medium', value: 'medium' },
-        { label: 'high', value: 'high' },
-      ]
+  const qualityOptions = [
+    ...(!isFalProvider ? [{ label: 'auto', value: 'auto' }] : []),
+    { label: 'low', value: 'low' },
+    { label: 'medium', value: 'medium' },
+    { label: 'high', value: 'high' },
+    ...(isGptImage25Model(getImageGenerationModel(activeProfile))
+      ? [{ label: 'xhigh', value: 'xhigh' }, { label: 'max', value: 'max' }]
+      : []),
+  ]
   const atImageLimit = inputImages.length >= API_MAX_IMAGES
   const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加` : '上传图片'
   const transparentOutputHint = useHintTooltip()
@@ -1233,6 +1233,9 @@ export default function InputBar() {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // 输入法确认候选字时，不叠加编辑器自身的换行或提交动作。
+    if (e.key === 'Enter' && (e.nativeEvent.isComposing || isComposingRef.current || e.nativeEvent.keyCode === 229)) return
+
     if (showAtImageMenu) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -1971,6 +1974,7 @@ export default function InputBar() {
           onClose={() => setShowSizePicker(false)}
           allowAuto={!isFalTextToImage}
           imageCount={effectiveNValue}
+          fourKBilling={isSizeManagedImageProfile(activeProfile)}
         />
       )}
 
@@ -2086,6 +2090,8 @@ export default function InputBar() {
                 setAtImageMenuDismissed(false)
               }}
               onKeyDown={handleKeyDown}
+              onCompositionStart={() => { isComposingRef.current = true }}
+              onCompositionEnd={() => { isComposingRef.current = false }}
               onPaste={handlePromptPaste}
               onCopy={handlePromptCopy}
               onClick={(e) => {

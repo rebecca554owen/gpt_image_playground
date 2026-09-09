@@ -369,7 +369,8 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     provider: 'openai',
     baseUrl: DEFAULT_BASE_URL,
     apiKey: DEFAULT_API_URL_PATCH?.apiKey ?? '',
-    model: DEFAULT_API_URL_PATCH?.model ?? DEFAULT_IMAGES_MODEL,
+    model: DEFAULT_API_URL_PATCH?.model ?? (apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL),
+    imageGenerationModel: DEFAULT_API_URL_PATCH?.imageGenerationModel ?? '',
     timeout: DEFAULT_API_TIMEOUT,
     codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? true,
     apiProxy: DEFAULT_OPENAI_API_PROXY,
@@ -404,6 +405,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     [profile.provider]: {
       baseUrl: profile.baseUrl,
       model: profile.model,
+      imageGenerationModel: profile.imageGenerationModel,
       apiMode: profile.apiMode,
       codexCli: profile.codexCli,
       apiProxy: profile.apiProxy,
@@ -420,6 +422,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       provider,
       baseUrl: savedDraft?.baseUrl ?? DEFAULT_FAL_BASE_URL,
       model: savedDraft?.model ?? DEFAULT_FAL_MODEL,
+      imageGenerationModel: savedDraft?.imageGenerationModel ?? profile.imageGenerationModel,
       apiMode: 'images',
       codexCli: false,
       apiProxy: false,
@@ -437,6 +440,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       provider: customProvider.id,
       baseUrl: savedDraft?.baseUrl ?? (shouldUseOpenAIDefaults ? DEFAULT_BASE_URL : profile.baseUrl || DEFAULT_BASE_URL),
       model: savedDraft?.model ?? (shouldUseOpenAIDefaults ? DEFAULT_IMAGES_MODEL : profile.model || DEFAULT_IMAGES_MODEL),
+      imageGenerationModel: savedDraft?.imageGenerationModel ?? profile.imageGenerationModel,
       apiMode: 'images',
       codexCli: false,
       apiProxy: false,
@@ -460,6 +464,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     provider,
     baseUrl: savedDraft?.baseUrl ?? DEFAULT_BASE_URL,
     model: savedDraft?.model ?? DEFAULT_IMAGES_MODEL,
+    imageGenerationModel: savedDraft?.imageGenerationModel ?? profile.imageGenerationModel,
     apiMode: nextApiMode,
     codexCli: savedDraft?.codexCli ?? profile.codexCli,
     apiProxy: savedDraft?.apiProxy ?? DEFAULT_OPENAI_API_PROXY,
@@ -475,6 +480,7 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
   const fallback = provider === 'fal' ? createDefaultFalProfile() : createDefaultOpenAIProfile()
   const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : undefined
   const model = typeof input.model === 'string' && input.model.trim() ? input.model : undefined
+  const imageGenerationModel = typeof input.imageGenerationModel === 'string' ? input.imageGenerationModel.trim() : ''
   const apiMode = input.apiMode === 'responses' ? 'responses' : input.apiMode === 'images' ? 'images' : undefined
   const knownProvider = provider === 'fal' || provider === 'openai' || customProviderIds.has(provider)
   if (!knownProvider) return undefined
@@ -484,6 +490,7 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
       ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
       : baseUrl,
     model,
+    imageGenerationModel,
     apiMode,
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
@@ -523,6 +530,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
+    imageGenerationModel: typeof record.imageGenerationModel === 'string' ? record.imageGenerationModel.trim() : '',
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
     apiMode,
     codexCli: Boolean(record.codexCli),
@@ -555,7 +563,8 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   const legacyProfile = createDefaultOpenAIProfile({
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : DEFAULT_BASE_URL,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : '',
-    model: typeof record.model === 'string' && record.model.trim() ? record.model : DEFAULT_IMAGES_MODEL,
+    model: typeof record.model === 'string' && record.model.trim() ? record.model : (legacyApiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL),
+    imageGenerationModel: typeof record.imageGenerationModel === 'string' ? record.imageGenerationModel.trim() : '',
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : DEFAULT_API_TIMEOUT,
     apiMode: legacyApiMode,
     codexCli: Boolean(record.codexCli),
@@ -737,6 +746,7 @@ function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
     profile.baseUrl === DEFAULT_BASE_URL &&
     profile.apiKey === '' &&
     profile.model === DEFAULT_IMAGES_MODEL &&
+    !profile.imageGenerationModel &&
     profile.timeout === DEFAULT_API_TIMEOUT &&
     profile.apiMode === 'images' &&
     profile.codexCli === true &&
@@ -767,6 +777,7 @@ function getApiProfileDedupKey(profile: ApiProfile): string {
     profile.baseUrl.trim().replace(/\/+$/, '').toLowerCase(),
     profile.apiKey.trim(),
     profile.model.trim(),
+    profile.imageGenerationModel?.trim() ?? '',
     profile.apiMode,
   ])
 }
@@ -776,6 +787,7 @@ function getApiProfileConnectionKey(profile: ApiProfile): string {
     profile.provider,
     profile.baseUrl.trim().replace(/\/+$/, '').toLowerCase(),
     profile.model.trim(),
+    profile.imageGenerationModel?.trim() ?? '',
     profile.apiMode,
   ])
 }
@@ -892,7 +904,8 @@ export function mergeImportedSettings(currentSettings: Partial<AppSettings> | un
 export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   baseUrl: DEFAULT_BASE_URL,
   apiKey: DEFAULT_API_URL_PATCH?.apiKey ?? '',
-  model: DEFAULT_API_URL_PATCH?.model ?? DEFAULT_IMAGES_MODEL,
+  model: DEFAULT_API_URL_PATCH?.model ?? (DEFAULT_API_URL_PATCH?.apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL),
+  imageGenerationModel: DEFAULT_API_URL_PATCH?.imageGenerationModel ?? '',
   timeout: DEFAULT_API_TIMEOUT,
   apiMode: DEFAULT_API_URL_PATCH?.apiMode ?? 'images',
   codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? true,

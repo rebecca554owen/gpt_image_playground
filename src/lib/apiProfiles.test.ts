@@ -13,6 +13,7 @@ import {
   importCustomProviderSettingsFromJson,
   mergeImportedSettings,
   normalizeSettings,
+  normalizeApiProfile,
   switchApiProfileProvider,
   validateApiProfile,
 } from './apiProfiles'
@@ -22,6 +23,20 @@ afterEach(() => {
 })
 
 describe('validateApiProfile', () => {
+  it('preserves old models and round-trips the independent image tool model through imports and provider switches', () => {
+    expect(normalizeApiProfile({ model: 'gpt-image-2', apiMode: 'images' }).model).toBe('gpt-image-2')
+    expect(normalizeApiProfile({ apiMode: 'responses' }).imageGenerationModel).toBe('')
+    const profile = createDefaultOpenAIProfile({ apiMode: 'responses', model: 'existing-text', imageGenerationModel: 'gpt-image-2.5-flare' })
+    const restored = normalizeApiProfile(JSON.parse(JSON.stringify(profile)))
+    expect(restored.imageGenerationModel).toBe('gpt-image-2.5-flare')
+    expect(switchApiProfileProvider(switchApiProfileProvider(restored, 'fal'), 'openai')).toMatchObject({
+      model: 'existing-text', apiMode: 'responses', imageGenerationModel: 'gpt-image-2.5-flare',
+    })
+    const settings = normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [restored] })
+    const merged = mergeImportedSettings(settings, { profiles: [{ ...restored, id: 'different', imageGenerationModel: 'gpt-image-2.5-sunburst' }] })
+    expect(merged.profiles.map((item) => item.imageGenerationModel)).toEqual(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])
+  })
+
   it('allows empty API URL when API proxy is enabled and available', () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
 

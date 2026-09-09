@@ -453,6 +453,28 @@ describe('mask draft lifecycle in store actions', () => {
     }))
   })
 
+  it('keeps an explicit 2.5 model and max quality without applying legacy 4K billing', async () => {
+    const { callImageApi } = await import('./lib/api')
+    vi.mocked(callImageApi).mockClear()
+    const settings = useStore.getState().settings
+    useStore.setState({
+      settings: normalizeSettings({
+        ...settings,
+        profiles: settings.profiles.map((profile) => ({ ...profile, apiKey: settings.apiKey, model: 'gpt-image-2.5-flare', codexCli: false })),
+      }),
+      params: { ...DEFAULT_PARAMS, size: '3840x2160', n: 2, quality: 'max' },
+    })
+    await submitTask()
+    for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useStore.getState().setConfirmDialog).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks[0].apiModel).toBe('gpt-image-2.5-flare')
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      settings: expect.objectContaining({ model: 'gpt-image-2.5-flare' }),
+      params: expect.objectContaining({ quality: 'max' }),
+    }))
+    expect(getPersistedState(useStore.getState()).params.quality).toBe('max')
+  })
+
   it('stores decoded image size as actual size when the API omits size', async () => {
     const { callImageApi } = await import('./lib/api')
     vi.mocked(callImageApi).mockClear()
