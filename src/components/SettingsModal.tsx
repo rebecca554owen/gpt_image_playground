@@ -9,6 +9,7 @@ import {
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
+  LEGACY_IMAGES_MODEL,
   FOUR_K_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_RESPONSES_MODEL,
@@ -1737,7 +1738,7 @@ export default function SettingsModal() {
                           <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">1K–2K 标准出图</span>
                           <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600 dark:bg-white/[0.06] dark:text-gray-400">1×</span>
                         </div>
-                        <code className="mt-1.5 block text-[11px] text-gray-500 dark:text-gray-400">{DEFAULT_IMAGES_MODEL}</code>
+                        <code className="mt-1.5 block text-[11px] text-gray-500 dark:text-gray-400">{LEGACY_IMAGES_MODEL}</code>
                       </div>
                       <div className="rounded-xl border border-amber-300/80 bg-gradient-to-br from-amber-50 to-orange-50 px-3 py-2.5 shadow-[0_6px_18px_rgba(245,158,11,0.10)] dark:border-amber-400/25 dark:from-amber-400/10 dark:to-orange-400/[0.06]">
                         <div className="flex items-center justify-between gap-2">

@@ -23,6 +23,15 @@ afterEach(() => {
 })
 
 describe('validateApiProfile', () => {
+  it('defaults new image profiles to Flare without overwriting saved model choices', () => {
+    expect(createDefaultOpenAIProfile().model).toBe('gpt-image-2.5-flare')
+    expect(normalizeApiProfile({ apiMode: 'images' }).model).toBe('gpt-image-2.5-flare')
+    for (const model of ['gpt-image-2', 'gpt-image-2-4k', 'gpt-image-2.5-sunburst', 'vendor/custom']) {
+      expect(normalizeApiProfile({ model, apiMode: 'images' }).model).toBe(model)
+    }
+    expect(createDefaultOpenAIProfile({ apiMode: 'responses' }).model).toBe('gpt-5.5')
+  })
+
   it('preserves old models and round-trips the independent image tool model through imports and provider switches', () => {
     expect(normalizeApiProfile({ model: 'gpt-image-2', apiMode: 'images' }).model).toBe('gpt-image-2')
     expect(normalizeApiProfile({ apiMode: 'responses' }).imageGenerationModel).toBe('')

@@ -425,7 +425,11 @@ describe('mask draft lifecycle in store actions', () => {
   })
 
   it('requires a final billing confirmation for multiple 4K images', async () => {
-    useStore.setState({ params: { ...DEFAULT_PARAMS, size: '3840x2160', n: 3 } })
+    const settings = useStore.getState().settings
+    useStore.setState({
+      settings: normalizeSettings({ ...settings, profiles: settings.profiles.map((profile) => ({ ...profile, apiKey: settings.apiKey, model: 'gpt-image-2' })) }),
+      params: { ...DEFAULT_PARAMS, size: '3840x2160', n: 3 },
+    })
 
     await submitTask()
 
@@ -442,7 +446,11 @@ describe('mask draft lifecycle in store actions', () => {
   it('fixes the task model to the 4K model after billing confirmation', async () => {
     const { callImageApi } = await import('./lib/api')
     vi.mocked(callImageApi).mockClear()
-    useStore.setState({ params: { ...DEFAULT_PARAMS, size: '3840x2160', n: 3 } })
+    const settings = useStore.getState().settings
+    useStore.setState({
+      settings: normalizeSettings({ ...settings, profiles: settings.profiles.map((profile) => ({ ...profile, apiKey: settings.apiKey, model: 'gpt-image-2' })) }),
+      params: { ...DEFAULT_PARAMS, size: '3840x2160', n: 3 },
+    })
 
     await submitTask({ allowFourKBilling: true })
     for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))

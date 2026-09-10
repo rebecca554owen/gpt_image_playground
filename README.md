@@ -7,7 +7,7 @@
 
 **基于 OpenAI gpt-image-2 API 的图片生成与编辑工具**
 
-支持手动选择 GPT Image 2.5：在 API 配置中将模型 ID 设为服务商支持的 `gpt-image-2.5-sunburst`、`gpt-image-2.5-flare` 或自定义别名。原有默认模型保持不变；显式指定的新模型不会被尺寸自动选择覆盖。
+新建 OpenAI Images API 配置默认使用 `gpt-image-2.5-flare`（速度优先）。也可在模型选择器中切换 `gpt-image-2.5-sunburst`、旧版 GPT Image 2 或自定义模型；已有用户保存的模型选择保持不变。2.5 模型不会被旧版的 4K 尺寸自动路由覆盖，实际可用性与费用以 API 服务商为准。
 
 Responses 模式可分别配置对话模型与「图像生成模型」，后者留空时保持 API 默认行为，也支持 `?imageGenerationModel=` 查询参数及配置导入。2.5 模型新增 `xhigh`、`max` 质量档位；需要手动设置质量时关闭「Codex CLI 兼容模式」。切换回旧模型时，高于 `high` 的质量会自动降为 `high`。
 
