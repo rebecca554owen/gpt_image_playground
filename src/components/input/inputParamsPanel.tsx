@@ -12,6 +12,8 @@ interface HintTooltipState {
 }
 
 export default function InputParamsPanel({
+  primaryOnly = false,
+  secondaryOnly = false,
   cols,
   params,
   setParams,
@@ -52,6 +54,8 @@ export default function InputParamsPanel({
   qualityHint,
   onOpenSizePicker,
 }: {
+  primaryOnly?: boolean
+  secondaryOnly?: boolean
   cols: string
   params: TaskParams
   setParams: (patch: Partial<TaskParams>) => void
@@ -94,7 +98,7 @@ export default function InputParamsPanel({
 }) {
   return (
     <div className={`grid ${cols} gap-2 text-xs flex-1`}>
-      <label
+      {!secondaryOnly && <label
         className="relative flex flex-col gap-0.5"
         onMouseEnter={sizeHint.show}
         onMouseLeave={sizeHint.hide}
@@ -116,8 +120,8 @@ export default function InputParamsPanel({
           visible={isFalTextToImage && sizeHint.visible}
           text={<>fal.ai 的文生图模式不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 参数</>}
         />
-      </label>
-      <label
+      </label>}
+      {!secondaryOnly && <label
         className="relative flex flex-col gap-0.5"
         onMouseEnter={qualityHint.show}
         onMouseLeave={qualityHint.hide}
@@ -143,8 +147,8 @@ export default function InputParamsPanel({
           visible={(activeProfile.codexCli || isFalProvider) && qualityHint.visible}
           text={isFalProvider ? <>fal.ai 不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</> : 'Codex CLI 不支持质量参数'}
         />
-      </label>
-      <label className="flex flex-col gap-0.5">
+      </label>}
+      {!primaryOnly && <label className="flex flex-col gap-0.5">
         <span className="text-gray-400 dark:text-gray-500 ml-1">格式</span>
         <Select
           value={params.output_format}
@@ -162,8 +166,8 @@ export default function InputParamsPanel({
           showValueTooltips={false}
           className={selectClass}
         />
-      </label>
-      {showTransparentOutputControl ? (
+      </label>}
+      {!primaryOnly && (showTransparentOutputControl ? (
         <label
           className="relative flex flex-col gap-0.5"
           onMouseEnter={transparentOutputHint.show}
@@ -224,8 +228,8 @@ export default function InputParamsPanel({
             text={isFalProvider ? 'fal.ai 不支持压缩率参数' : '仅 JPEG 和 WebP 支持压缩率'}
           />
         </label>
-      )}
-      <label
+      ))}
+      {!primaryOnly && <label
         className="relative flex flex-col gap-0.5"
         onMouseEnter={moderationHint.show}
         onMouseLeave={moderationHint.hide}
@@ -254,8 +258,8 @@ export default function InputParamsPanel({
           visible={moderationDisabled && moderationHint.visible}
           text="fal.ai 不支持审核参数"
         />
-      </label>
-      <label
+      </label>}
+      {!secondaryOnly && <label
         className="relative flex flex-col gap-0.5"
         onMouseEnter={() => { showAgentNHint(); streamConcurrentHint.show() }}
         onMouseLeave={() => { hideNLimitHint(); streamConcurrentHint.hide() }}
@@ -299,7 +303,7 @@ export default function InputParamsPanel({
         />
         <ButtonTooltip visible={nLimitHint.visible} text={nLimitHintText} />
         <ButtonTooltip visible={streamConcurrentByN && streamConcurrentHint.visible && !nLimitHint.visible} text="数量大于 1 时会将多图生成拆分为并发单图" />
-      </label>
+      </label>}
     </div>
   )
 }

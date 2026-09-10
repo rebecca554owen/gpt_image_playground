@@ -1,9 +1,10 @@
 import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { Paperclip, SlidersHorizontal, Sparkle, Stop } from '@phosphor-icons/react'
 import { ALL_FAVORITES_COLLECTION_ID, deleteFavoriteCollection, getTaskFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, addImageFromFile, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { DEFAULT_PARAMS, type TaskRecord } from '../types'
 import { getActiveApiProfile, getAgentImageApiProfile, normalizeSettings } from '../lib/apiProfiles'
-import { getImageGenerationModel, isGptImage25Model } from '../lib/imageModels'
+import { getImageGenerationModel, getImageModelPatch, isGptImage25Model } from '../lib/imageModels'
 import { isSizeManagedImageProfile } from '../lib/imageModelSelection'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
 import { getAtImageQuery, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, getSelectedImageMentionLabel, getSelectedTextMentionLabel, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
@@ -19,6 +20,7 @@ import ButtonTooltip from './input/buttonTooltip'
 import DragUploadOverlay from './input/dragUploadOverlay'
 import InputBatchBars from './input/inputBatchBars'
 import InputParamsPanel from './input/inputParamsPanel'
+import ImageModelPicker from './ImageModelPicker'
 
 
 function getMentionTagTextLength(el: Element) {
@@ -623,6 +625,7 @@ export default function InputBar() {
   const prevHeightRef = useRef(42)
 
   const [isDragging, setIsDragging] = useState(false)
+  const [showAdvancedParams, setShowAdvancedParams] = useState(false)
   const [isSingleLine, setIsSingleLine] = useState(true)
   const [promptExpanded, setPromptExpanded] = useState(false)
   const [promptExpandedTop, setPromptExpandedTop] = useState(0)
@@ -1916,8 +1919,27 @@ export default function InputBar() {
     )
   }
 
-  const renderParams = (cols: string) => (
+  const renderModelPicker = () => activeProfile.provider === 'openai' && (
+    <ImageModelPicker
+      key={activeProfile.id}
+      compact
+      value={getImageGenerationModel(activeProfile)}
+      allowDefault={activeProfile.apiMode === 'responses'}
+      onChange={(model) => {
+        const state = useStore.getState()
+        state.setSettings({
+          profiles: state.settings.profiles.map((profile) => profile.id === activeProfile.id
+            ? { ...profile, ...getImageModelPatch(profile, model) }
+            : profile),
+        })
+      }}
+    />
+  )
+
+  const renderParams = (cols: string, primaryOnly = false, secondaryOnly = false) => (
     <InputParamsPanel
+      primaryOnly={primaryOnly}
+      secondaryOnly={secondaryOnly}
       cols={cols}
       params={params}
       setParams={setParams}
@@ -1980,7 +2002,7 @@ export default function InputBar() {
 
       <div
         data-input-bar
-        className={`fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-4xl px-3 sm:px-4 transition-all duration-300${promptExpanded ? ' flex flex-col' : ''}`}
+        className={`fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-6xl px-3 sm:px-4 transition-all duration-300${promptExpanded ? ' flex flex-col' : ''}`}
         style={promptExpanded ? { top: `${promptExpandedTop}px`, transitionProperty: 'none' } : undefined}
       >
         <InputBatchBars
@@ -2172,65 +2194,35 @@ export default function InputBar() {
           <div className="mt-3">
             {/* 桌面端布局 */}
             <div className="hidden sm:flex items-end justify-between gap-3">
-              {renderParams('grid-cols-6')}
-
-              <div className="flex gap-2 flex-shrink-0 mb-0.5">
-                <div
-                  className="relative"
-                  onMouseEnter={() => setAttachHover(true)}
-                  onMouseLeave={() => setAttachHover(false)}
+              <div className="relative mr-auto shrink-0" onMouseEnter={() => setAttachHover(true)} onMouseLeave={() => setAttachHover(false)}>
+                <ButtonTooltip visible={attachHover} text={uploadImageTooltipText} />
+                <button type="button" data-onboarding="upload" disabled={atImageLimit} onClick={() => fileInputRef.current?.click()} aria-label={uploadImageTooltipText} className="rounded-xl border border-gray-200/80 bg-white/70 p-2.5 text-gray-500 transition-colors hover:bg-gray-50 focus-visible:outline-blue-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-white/[0.03] dark:text-gray-300 dark:hover:bg-white/[0.06]">
+                  <Paperclip size={20} />
+                </button>
+              </div>
+              {!isMobile && activeProfile.provider === 'openai' && <div className="w-40 shrink-0">{renderModelPicker()}</div>}
+              <div className="min-w-0 max-w-sm flex-1">{renderParams('grid-cols-3', true)}</div>
+              <button type="button" aria-label="更多生成参数" aria-expanded={showAdvancedParams} onClick={() => setShowAdvancedParams((value) => !value)} className={`shrink-0 rounded-xl border p-2.5 transition-colors focus-visible:outline-blue-500 ${showAdvancedParams ? 'border-blue-300 bg-blue-50 text-blue-600 dark:border-blue-500/50 dark:bg-blue-500/15 dark:text-blue-300' : 'border-gray-200/80 bg-white/70 text-gray-500 hover:bg-gray-50 dark:border-white/10 dark:bg-white/[0.03] dark:text-gray-300 dark:hover:bg-white/[0.06]'}`}><SlidersHorizontal size={20} /></button>
+              <div className="relative shrink-0" onMouseEnter={() => setSubmitHover(true)} onMouseLeave={() => setSubmitHover(false)}>
+                <ButtonTooltip visible={(activeAgentIsRunning || !hasSubmitApiConfig) && submitHover} text={submitTooltipText} />
+                <button
+                  type="button"
+                  data-onboarding="generate"
+                  onClick={() => activeAgentIsRunning ? stopActiveAgentResponse() : hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
+                  disabled={!activeAgentIsRunning && hasSubmitApiConfig && !canSubmit}
+                  aria-label={submitButtonAriaLabel}
+                  className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium text-white transition-colors focus-visible:outline-blue-500 disabled:cursor-not-allowed disabled:opacity-40 ${activeAgentIsRunning ? 'bg-red-500 hover:bg-red-600' : 'bg-blue-600 hover:bg-blue-700'}`}
                 >
-                  <ButtonTooltip visible={attachHover} text={uploadImageTooltipText} />
-                  <button
-                    data-onboarding="upload"
-                    onClick={() => !atImageLimit && fileInputRef.current?.click()}
-                    className={`p-2.5 rounded-xl transition-all shadow-sm ${
-                      atImageLimit
-                        ? 'bg-gray-200 dark:bg-white/[0.04] text-gray-300 dark:text-gray-500 cursor-not-allowed'
-                        : 'bg-gray-200 dark:bg-white/[0.06] hover:bg-gray-300 dark:hover:bg-white/[0.1] text-gray-500 dark:text-gray-300 hover:shadow'
-                    }`}
-                    aria-label={uploadImageTooltipText}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                    </svg>
-                  </button>
-                </div>
-                <div
-                  className="relative"
-                  onMouseEnter={() => setSubmitHover(true)}
-                  onMouseLeave={() => setSubmitHover(false)}
-                >
-                  <ButtonTooltip visible={(activeAgentIsRunning || !hasSubmitApiConfig) && submitHover} text={submitTooltipText} />
-                  <button
-                    data-onboarding="generate"
-                    onClick={() => activeAgentIsRunning ? stopActiveAgentResponse() : hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
-                    disabled={activeAgentIsRunning ? false : hasSubmitApiConfig ? !canSubmit : false}
-                    className={`p-2.5 rounded-xl transition-all shadow-sm hover:shadow ${
-                      activeAgentIsRunning
-                        ? 'bg-red-500 text-white hover:bg-red-600'
-                        : !hasSubmitApiConfig
-                        ? 'bg-gray-300 dark:bg-white/[0.06] text-white cursor-pointer'
-                        : 'bg-blue-500 text-white hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-white/[0.04] disabled:opacity-50 disabled:cursor-not-allowed'
-                    }`}
-                    aria-label={submitButtonAriaLabel}
-                  >
-                    {activeAgentIsRunning ? (
-                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                        <rect x="7" y="7" width="10" height="10" rx="1.5" />
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                      </svg>
-                    )}
-                  </button>
-                </div>
+                  {activeAgentIsRunning ? <Stop size={20} weight="fill" /> : <Sparkle size={20} />}
+                  <span className="hidden md:inline">{activeAgentIsRunning ? '停止生成' : hasSubmitApiConfig ? '生成图像' : '配置 API'}</span>
+                </button>
               </div>
             </div>
+            {showAdvancedParams && <div className="mt-3 hidden border-t border-gray-100 pt-3 dark:border-white/[0.06] sm:block">{renderParams('grid-cols-3', false, true)}</div>}
 
             {/* 移动端布局 */}
             <div className="sm:hidden flex flex-col gap-2">
+              {isMobile && renderModelPicker()}
               <div className={`collapse-section${mobileCollapsed ? ' collapsed' : ''}`}>
                 <div className="collapse-inner">
                   {renderParams('grid-cols-2')}

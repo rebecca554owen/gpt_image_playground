@@ -29,7 +29,7 @@ import {
   switchApiProfileProvider,
 } from '../lib/apiProfiles'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
-import { GPT_IMAGE_25_MODELS } from '../lib/imageModels'
+import { getImageGenerationModel, getImageModelPatch } from '../lib/imageModels'
 import { isSizeManagedImageProfile } from '../lib/imageModelSelection'
 import { requestBrowserNotificationPermission, type BrowserNotificationPermissionResult } from '../lib/browserNotification'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type AgentApiConfigMode, type ApiProfile, type AppSettings, type CustomProviderDefinition, type ZipDownloadRoute } from '../types'
@@ -42,6 +42,7 @@ import ViewportTooltip from './ViewportTooltip'
 import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon } from './icons'
 import GeneralSettingsTab from './settings/GeneralSettingsTab'
 import AgentSettingsTab from './settings/AgentSettingsTab'
+import ImageModelPicker from './ImageModelPicker'
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -1710,23 +1711,15 @@ export default function SettingsModal() {
               {/* 7. 模型 ID（紧跟接口选择） */}
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
-                  模型 ID
+                  {activeProfile.provider === 'openai' && activeProfile.apiMode === 'images' ? '图像模型' : '模型 ID'}
                 </span>
                 {activeProfile.apiMode === 'images' && activeProfile.provider === 'openai' && (
                   <div className="mb-3">
-                    <input
+                    <ImageModelPicker
                       value={activeProfile.model}
-                      onChange={(e) => updateActiveProfile({ model: e.target.value })}
-                      onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
-                      list="gpt-image-models"
-                      placeholder={DEFAULT_IMAGES_MODEL}
-                      className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                      onChange={(model) => updateActiveProfile({ model }, true)}
                     />
-                    <datalist id="gpt-image-models">
-                      <option value={DEFAULT_IMAGES_MODEL} />
-                      {GPT_IMAGE_25_MODELS.map((model) => <option key={model} value={model} />)}
-                    </datalist>
-                    <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">支持 GPT Image 2.5 或服务商提供的自定义模型 ID。原有 GPT Image 2 配置继续按尺寸自动匹配。</p>
+                    <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">点击查看模型介绍，也可以输入服务商提供的自定义模型 ID。</p>
                   </div>
                 )}
                 {isSizeManagedImageProfile(activeProfile) ? (
@@ -1785,21 +1778,15 @@ export default function SettingsModal() {
               </div>
 
               {activeProfile.provider === 'openai' && activeProfile.apiMode === 'responses' && (
-                <label className="block">
+                <div className="block">
                   <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">图像生成模型</span>
-                  <input
-                    value={activeProfile.imageGenerationModel ?? ''}
-                    onChange={(e) => updateActiveProfile({ imageGenerationModel: e.target.value })}
-                    onBlur={(e) => commitActiveProfilePatch({ imageGenerationModel: e.target.value })}
-                    list="responses-image-models"
-                    placeholder="留空使用 API 默认模型"
-                    className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                  <ImageModelPicker
+                    value={getImageGenerationModel(activeProfile)}
+                    allowDefault
+                    onChange={(model) => updateActiveProfile(getImageModelPatch(activeProfile, model), true)}
                   />
-                  <datalist id="responses-image-models">
-                    {GPT_IMAGE_25_MODELS.map((model) => <option key={model} value={model} />)}
-                  </datalist>
-                  <span className="mt-1.5 block text-xs text-gray-500 dark:text-gray-400">独立于上方的对话模型；留空时不发送图像工具模型 ID，保持 API 默认行为。支持查询参数 imageGenerationModel。</span>
-                </label>
+                  <span className="mt-1.5 block text-xs text-gray-500 dark:text-gray-400">独立于上方的对话模型；选择「API 默认」时不指定图像工具模型。支持查询参数 imageGenerationModel。</span>
+                </div>
               )}
 
               {/* 8. 流式传输 + 中间步骤图像数 */}
