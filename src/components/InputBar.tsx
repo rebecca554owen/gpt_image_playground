@@ -388,7 +388,7 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
   )
 }
 
-export default function InputBar() {
+export default function InputBar({ showCreationSettings = false }: { showCreationSettings?: boolean }) {
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
   const setPrompt = useStore((s) => s.setPrompt)
@@ -635,7 +635,10 @@ export default function InputBar() {
   const [submitHover, setSubmitHover] = useState(false)
   const [attachHover, setAttachHover] = useState(false)
   const [imageHintId, setImageHintId] = useState<string | null>(null)
-  const [mobileCollapsed, setMobileCollapsed] = useState(false)
+  const [mobileCollapsed, setMobileCollapsed] = useState(showCreationSettings)
+  useEffect(() => {
+    if (showCreationSettings) setMobileCollapsed(true)
+  }, [showCreationSettings])
   const [showSizePicker, setShowSizePicker] = useState(false)
   const [showMobileUploadMenu, setShowMobileUploadMenu] = useState(false)
   const [maskPreviewUrl, setMaskPreviewUrl] = useState('')
@@ -750,7 +753,7 @@ export default function InputBar() {
     ? maskDraft ? '遮罩编辑' : '生成图像'
     : '请先配置 API'
   const submitTooltipText = activeAgentIsRunning ? '停止生成' : '尚未完成 API 配置，请在右上角设置中进行'
-  const promptPlaceholder = '描述你想生成的图片，可输入 @ 来指定参考图...'
+  const promptPlaceholder = '请输入图片提示词；可输入 @ 来指定参考图...'
   const submitCurrentMode = useCallback(() => {
     if (appMode === 'agent') {
       void submitAgentMessage()
@@ -1940,6 +1943,7 @@ export default function InputBar() {
     <InputParamsPanel
       primaryOnly={primaryOnly}
       secondaryOnly={secondaryOnly}
+      hideSize={showCreationSettings}
       cols={cols}
       params={params}
       setParams={setParams}
@@ -2002,7 +2006,7 @@ export default function InputBar() {
 
       <div
         data-input-bar
-        className={`fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-6xl px-3 sm:px-4 transition-all duration-300${promptExpanded ? ' flex flex-col' : ''}`}
+        className={`fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-6xl px-3 sm:px-4 transition-all duration-300${showCreationSettings ? ' creation-input' : ''}${promptExpanded ? ' flex flex-col' : ''}`}
         style={promptExpanded ? { top: `${promptExpandedTop}px`, transitionProperty: 'none' } : undefined}
       >
         <InputBatchBars
@@ -2200,8 +2204,8 @@ export default function InputBar() {
                   <Paperclip size={20} />
                 </button>
               </div>
-              {!isMobile && activeProfile.provider === 'openai' && <div className="w-40 shrink-0">{renderModelPicker()}</div>}
-              <div className="min-w-0 max-w-sm flex-1">{renderParams('grid-cols-3', true)}</div>
+              {!showCreationSettings && !isMobile && activeProfile.provider === 'openai' && <div className="w-40 shrink-0">{renderModelPicker()}</div>}
+              <div className="min-w-0 max-w-sm flex-1">{renderParams(showCreationSettings ? 'grid-cols-2' : 'grid-cols-3', true)}</div>
               <button type="button" aria-label="更多生成参数" aria-expanded={showAdvancedParams} onClick={() => setShowAdvancedParams((value) => !value)} className={`shrink-0 rounded-xl border p-2.5 transition-colors focus-visible:outline-blue-500 ${showAdvancedParams ? 'border-blue-300 bg-blue-50 text-blue-600 dark:border-blue-500/50 dark:bg-blue-500/15 dark:text-blue-300' : 'border-gray-200/80 bg-white/70 text-gray-500 hover:bg-gray-50 dark:border-white/10 dark:bg-white/[0.03] dark:text-gray-300 dark:hover:bg-white/[0.06]'}`}><SlidersHorizontal size={20} /></button>
               <div className="relative shrink-0" onMouseEnter={() => setSubmitHover(true)} onMouseLeave={() => setSubmitHover(false)}>
                 <ButtonTooltip visible={(activeAgentIsRunning || !hasSubmitApiConfig) && submitHover} text={submitTooltipText} />
@@ -2222,8 +2226,9 @@ export default function InputBar() {
 
             {/* 移动端布局 */}
             <div className="sm:hidden flex flex-col gap-2">
-              {isMobile && renderModelPicker()}
-              <div className={`collapse-section${mobileCollapsed ? ' collapsed' : ''}`}>
+              {!showCreationSettings && isMobile && renderModelPicker()}
+              {showCreationSettings && <button type="button" aria-expanded={!mobileCollapsed} onClick={() => setMobileCollapsed((value) => !value)} className="flex items-center justify-center gap-1.5 rounded-lg py-1 text-xs text-gray-500 focus-visible:outline-blue-500 dark:text-gray-400"><SlidersHorizontal size={16} />{mobileCollapsed ? '更多生成参数' : '收起生成参数'}</button>}
+              <div inert={mobileCollapsed} className={`collapse-section${mobileCollapsed ? ' collapsed' : ''}`}>
                 <div className="collapse-inner">
                   {renderParams('grid-cols-2')}
                   <div className="h-2" />

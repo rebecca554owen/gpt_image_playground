@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
+import { ImageSquare } from '@phosphor-icons/react'
 import { ALL_FAVORITES_COLLECTION_ID, getTaskFavoriteCollectionIds, useStore, reuseConfig, editOutputs, removeTask, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import TaskCard from './TaskCard'
 
@@ -254,13 +255,13 @@ export default function TaskGrid() {
 
   if (!filteredTasks.length) {
     return (
-      <div className="text-center py-20 text-gray-400 dark:text-gray-500">
+      <div data-empty-gallery className="flex flex-col items-center justify-center py-16 text-center text-gray-400 dark:text-gray-500">
         {searchQuery || filterFavorite ? (
           <p className="text-sm">没有找到匹配的任务</p>
         ) : (
           <>
-            <h2 className="text-2xl font-semibold tracking-tight text-gray-900 dark:text-gray-100 sm:text-3xl">把想法，变成图像</h2>
-            <p className="mt-3 text-sm text-gray-500 dark:text-gray-400 sm:text-base">描述画面，选择适合的模型</p>
+            <ImageSquare size={80} weight="light" className="mb-5 text-gray-300 dark:text-gray-600" />
+            <h2 className="text-base text-gray-500 dark:text-gray-400">你的画面将在这里呈现</h2>
           </>
         )}
       </div>

@@ -461,6 +461,56 @@ input[type="number"] {
   min-height: 3.5rem;
 }
 
+/* 桌面常驻设置栏；窄屏回到文档流，档位仍直接可见。 */
+.creation-settings {
+  display: flex;
+  flex-direction: column;
+  margin: 1rem max(1rem, var(--safe-area-right)) 1.5rem max(1rem, var(--safe-area-left));
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.creation-workspace {
+  padding-bottom: max(12rem, var(--input-bar-clearance, 12rem));
+}
+
+.creation-input {
+  transition-property: none;
+}
+
+@media (min-width: 1024px) {
+  .creation-workspace {
+    margin-right: 27rem;
+  }
+
+  .creation-settings {
+    position: fixed;
+    z-index: 20;
+    top: calc(3.5rem + var(--safe-area-top));
+    right: 0;
+    bottom: 0;
+    width: 27rem;
+    margin: 0;
+    padding: 2.5rem max(1.75rem, var(--safe-area-right)) max(1.5rem, var(--safe-area-bottom)) 1.75rem;
+    border-bottom: 0;
+    border-left: 1px solid hsl(var(--border));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .creation-input {
+    left: calc((100% - 27rem) / 2);
+    width: calc(100% - 27rem);
+  }
+
+  .creation-workspace [data-empty-gallery] {
+    min-height: max(20rem, calc(100dvh - 11rem - var(--input-bar-clearance, 12rem)));
+    border: 1px solid hsl(var(--border));
+    border-radius: 1.5rem;
+    background: hsl(var(--background));
+  }
+}
+
 @media (max-width: 640px) {
   input,
   textarea,

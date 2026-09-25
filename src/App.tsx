@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { initStore } from './store'
 import { useStore } from './store'
 import { activateFirstImportedProfile, buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
-import { isDefaultConfigOnlyEnabled, mergeImportedSettings } from './lib/apiProfiles'
+import { getActiveApiProfile, isDefaultConfigOnlyEnabled, mergeImportedSettings } from './lib/apiProfiles'
 import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/customProviderConfigUrl'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
@@ -12,6 +12,7 @@ import TaskGrid from './components/TaskGrid'
 import AgentWorkspace from './components/AgentWorkspace'
 import VideoWorkspace from './components/VideoWorkspace'
 import InputBar from './components/InputBar'
+import CreationSettings from './components/CreationSettings'
 import OnboardingGuide from './components/OnboardingGuide'
 import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
@@ -32,6 +33,12 @@ export default function App() {
   const appMode = useStore((s) => s.appMode)
   const filterFavorite = useStore((s) => s.filterFavorite)
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
+  const settings = useStore((s) => s.settings)
+  const reusedTaskApiProfileId = useStore((s) => s.reusedTaskApiProfileId)
+  const galleryProfile = (settings.reuseTaskApiProfileTemporarily && reusedTaskApiProfileId
+    ? settings.profiles.find((profile) => profile.id === reusedTaskApiProfileId)
+    : null) ?? getActiveApiProfile(settings)
+  const showCreationSettings = appMode === 'gallery' && galleryProfile.provider === 'openai'
   useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
 
@@ -131,14 +138,15 @@ export default function App() {
       ) : appMode === 'video' ? (
         <VideoWorkspace />
       ) : (
-        <main data-home-main data-drag-select-surface className="pb-48">
+        <main data-home-main data-drag-select-surface className={`pb-48${showCreationSettings ? ' creation-workspace' : ''}`}>
+          {showCreationSettings && <CreationSettings key={galleryProfile.id} profile={galleryProfile} />}
           <div className="safe-area-x max-w-7xl mx-auto">
             <SearchBar />
             {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
           </div>
         </main>
       )}
-      {appMode !== 'video' && <InputBar />}
+      {appMode !== 'video' && <InputBar showCreationSettings={showCreationSettings} />}
       <OnboardingGuide ready={storeReady} />
       <DetailModal />
       <Lightbox />

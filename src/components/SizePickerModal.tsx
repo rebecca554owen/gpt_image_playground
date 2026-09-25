@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { calculateImageSize, isFourKImageSize, normalizeImageSize, parseRatio, type SizeTier } from '../lib/size'
+import { calculateImageSize, findImageSizePreset, isFourKImageSize, normalizeImageSize, parseRatio, type SizeTier } from '../lib/size'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
+import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import ViewportTooltip from './ViewportTooltip'
 
 const TIERS: SizeTier[] = ['1K', '2K', '4K']
@@ -23,6 +24,7 @@ interface Props {
   allowAuto?: boolean
   imageCount?: number
   fourKBilling?: boolean
+  initialMode?: Mode
 }
 
 type Mode = 'auto' | 'ratio' | 'resolution'
@@ -33,22 +35,11 @@ function parseSize(size: string) {
   return { width: match[1], height: match[2] }
 }
 
-function findPresetForSize(size: string) {
-  const normalized = normalizeImageSize(size)
-  for (const tier of TIERS) {
-    for (const ratio of RATIOS) {
-      if (calculateImageSize(tier, ratio.value) === normalized) {
-        return { tier, ratio: ratio.value }
-      }
-    }
-  }
-  return null
-}
-
-export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, imageCount = 1, fourKBilling = true }: Props) {
+export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, imageCount = 1, fourKBilling = true, initialMode }: Props) {
   usePreventBackgroundScroll(true)
 
   const modalRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   const mouseDownTargetRef = useRef<EventTarget | null>(null)
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -71,9 +62,10 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     mouseDownTargetRef.current = null
   }
 
-  const currentPreset = findPresetForSize(currentSize)
+  const currentPreset = findImageSizePreset(currentSize)
   const currentParsedSize = parseSize(currentSize)
   const [mode, setMode] = useState<Mode>(() => {
+    if (initialMode) return initialMode
     if (!currentSize || currentSize === 'auto') return allowAuto ? 'auto' : 'ratio'
     if (currentPreset) return 'ratio'
     return 'resolution'
@@ -81,7 +73,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
 
   // Ratio mode state
   const [tier, setTier] = useState<SizeTier>(currentPreset?.tier ?? '1K')
-  const [ratio, setRatio] = useState(currentPreset?.ratio ?? (allowAuto ? '1:1' : '4:3'))
+  const [ratio, setRatio] = useState<string>(currentPreset?.ratio ?? (allowAuto ? '1:1' : '4:3'))
   const [customRatio, setCustomRatio] = useState('16:9')
 
   // Resolution mode state
@@ -89,6 +81,15 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   const [customH, setCustomH] = useState(currentParsedSize?.height ?? '1024')
   const [fourKAction, setFourKAction] = useState<'select' | 'apply' | null>(null)
   const [fourKConfirmed, setFourKConfirmed] = useState(false)
+  useCloseOnEscape(true, () => fourKAction ? setFourKAction(null) : onClose())
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null
+    const dialogs = rootRef.current?.querySelectorAll<HTMLElement>('[role="dialog"]')
+    const dialog = dialogs?.[dialogs.length - 1]
+    dialog?.querySelector<HTMLElement>('input, button')?.focus()
+    return () => { if (previousFocus?.isConnected) previousFocus.focus() }
+  }, [fourKAction])
 
   const [hintVisible, setHintVisible] = useState(false)
   const hintTimerRef = useRef<number | null>(null)
@@ -201,15 +202,29 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
 
   return (
     <div
+      ref={rootRef}
       data-no-drag-select
       className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      onKeyDown={(event) => {
+        if (event.key !== 'Tab') return
+        const dialogs = rootRef.current?.querySelectorAll<HTMLElement>('[role="dialog"]')
+        const dialog = dialogs?.[dialogs.length - 1]
+        const items = Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]') ?? []).filter((item) => item.getClientRects().length > 0)
+        const first = items[0]
+        const last = items[items.length - 1]
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+        if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+      }}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
     >
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-overlay-in" />
       <div
         ref={modalRef}
-        className="relative z-10 w-full max-w-md rounded-3xl border border-white/50 bg-white/95 p-5 shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10"
+        role="dialog"
+        aria-modal="true"
+        aria-label="设置图像尺寸"
+        className="relative z-10 max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-3xl border border-white/50 bg-white/95 p-5 shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10"
       >
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
@@ -365,7 +380,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                 <section>
                   <div className="mb-4 text-xs font-medium text-gray-400 dark:text-gray-500">输入具体像素值</div>
                   <div className="flex items-center gap-4">
-                    <label className="flex-1">
+                    <label className="min-w-0 flex-1">
                       <span className="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">宽度 (Width)</span>
                       <input
                         type="number"
@@ -380,7 +395,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                       </svg>
                     </div>
-                    <label className="flex-1">
+                    <label className="min-w-0 flex-1">
                       <span className="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">高度 (Height)</span>
                       <input
                         type="number"

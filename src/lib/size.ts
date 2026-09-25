@@ -9,7 +9,19 @@ const STANDARD_MAX_EDGE = 2560
 const STANDARD_MAX_PIXELS = 4_194_304
 
 export type SizeTier = '1K' | '2K' | '4K'
+export const IMAGE_SIZE_TIERS: SizeTier[] = ['1K', '2K', '4K']
+export const IMAGE_SIZE_RATIOS = ['1:1', '4:3', '3:2', '16:9', '9:16', '3:4', '2:3', '21:9'] as const
 type PresetRatio = '1:1' | '3:2' | '2:3' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9'
+
+export function findImageSizePreset(size: string) {
+  const normalized = normalizeImageSize(size)
+  for (const tier of IMAGE_SIZE_TIERS) {
+    for (const ratio of IMAGE_SIZE_RATIOS) {
+      if (calculateImageSize(tier, ratio) === normalized) return { tier, ratio }
+    }
+  }
+  return null
+}
 
 function roundToMultiple(value: number, multiple: number) {
   return Math.max(multiple, Math.round(value / multiple) * multiple)

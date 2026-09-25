@@ -14,6 +14,7 @@ interface HintTooltipState {
 export default function InputParamsPanel({
   primaryOnly = false,
   secondaryOnly = false,
+  hideSize = false,
   cols,
   params,
   setParams,
@@ -56,6 +57,7 @@ export default function InputParamsPanel({
 }: {
   primaryOnly?: boolean
   secondaryOnly?: boolean
+  hideSize?: boolean
   cols: string
   params: TaskParams
   setParams: (patch: Partial<TaskParams>) => void
@@ -98,7 +100,7 @@ export default function InputParamsPanel({
 }) {
   return (
     <div className={`grid ${cols} gap-2 text-xs flex-1`}>
-      {!secondaryOnly && <label
+      {!secondaryOnly && !hideSize && <label
         className="relative flex flex-col gap-0.5"
         onMouseEnter={sizeHint.show}
         onMouseLeave={sizeHint.hide}

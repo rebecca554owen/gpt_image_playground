@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { calculateImageSize, isFourKImageSize } from './size'
+import { calculateImageSize, findImageSizePreset, IMAGE_SIZE_RATIOS, IMAGE_SIZE_TIERS, isFourKImageSize } from './size'
+
+describe('findImageSizePreset', () => {
+  it('restores every resolution and aspect ratio from persisted pixel dimensions', () => {
+    for (const tier of IMAGE_SIZE_TIERS) {
+      for (const ratio of IMAGE_SIZE_RATIOS) {
+        expect(findImageSizePreset(calculateImageSize(tier, ratio)!)).toEqual({ tier, ratio })
+      }
+    }
+  })
+
+  it('recognizes normalized dimensions without labeling custom or auto as a preset', () => {
+    expect(findImageSizePreset('3840 × 2160')).toEqual({ tier: '4K', ratio: '16:9' })
+    expect(findImageSizePreset('auto')).toBeNull()
+    expect(findImageSizePreset('1600x1200')).toBeNull()
+    expect(findImageSizePreset('invalid')).toBeNull()
+  })
+})
 
 describe('calculateImageSize', () => {
   it('uses common 16:9 display resolutions for the built-in tiers', () => {
