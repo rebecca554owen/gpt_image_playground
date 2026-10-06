@@ -778,7 +778,10 @@ describe('callImageApi', () => {
       'data:image/png;base64,aW1hZ2U=',
     ])
     const imageCall = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input).endsWith('/result-images/0'))
-    expect(imageCall?.[1]?.headers).toEqual({ 'X-Task-Token': 'token-b' })
+    expect(imageCall?.[1]?.headers).toEqual({
+      'X-Task-Token': 'token-b',
+      'X-Image-Result-Mode': 'async',
+    })
   })
 
   it('downloads a stored top-level URL result through the task service without calling the CDN', async () => {
@@ -844,7 +847,7 @@ describe('callImageApi', () => {
     })
 
     await expect(request).rejects.toSatisfy((err: unknown) =>
-      isServerImageJobResultError(err) && !err.retryable && err.message === '结果格式无法识别。',
+      isServerImageJobResultError(err) && !err.retryable && err.message.includes('结果格式无法识别。'),
     )
   })
 

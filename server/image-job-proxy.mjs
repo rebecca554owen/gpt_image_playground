@@ -354,7 +354,7 @@ export const createImageJobProxy = (options = {}) => {
     maxWaitersPerJob: readInteger(env.IMAGE_JOB_MAX_WAITERS_PER_JOB, 4, 1, 100),
     port: readInteger(env.IMAGE_JOB_PORT, 3001, 0, 65_535),
     resultImageHosts: parseResultImageHosts(env.IMAGE_JOB_RESULT_IMAGE_HOSTS),
-    resultImageTimeoutMs: readInteger(env.IMAGE_JOB_RESULT_IMAGE_TIMEOUT_MS, 120_000, 1_000, 1_200_000),
+    resultImageTimeoutMs: readInteger(env.IMAGE_JOB_RESULT_IMAGE_TIMEOUT_MS, 30_000, 1_000, 1_200_000),
     retryBaseDelayMs: readInteger(env.IMAGE_JOB_RETRY_BASE_DELAY_MS, 2_000, 0, 60_000),
     retryMaxDelayMs: readInteger(env.IMAGE_JOB_RETRY_MAX_DELAY_MS, 60_000, 0, 300_000),
     successTtlMs: readInteger(env.IMAGE_JOB_SUCCESS_TTL_MS, 24 * 60 * 60 * 1000, 1_000, 365 * 24 * 60 * 60 * 1000),
@@ -418,6 +418,7 @@ export const createImageJobProxy = (options = {}) => {
   const dispatchControllers = new Map()
   const dispatchPromises = new Set()
   const protectedFiles = new Set()
+  const resultImages = new Map()
   let running = 0
   let pumping = false
   let closing = false
@@ -515,7 +516,18 @@ export const createImageJobProxy = (options = {}) => {
     return row
   }
 
+  const removeResultImages = (id) => {
+    for (const [cacheKey, entry] of resultImages) {
+      if (entry.jobId !== id) continue
+      entry.controller.abort()
+      resultImages.delete(cacheKey)
+      protectedFiles.delete(entry.file)
+      removeFileQuietly(entry.file)
+    }
+  }
+
   const removeJobFiles = (row) => {
+    removeResultImages(row.id)
     removeFile(row.request_file)
     removeFile(row.headers_file)
     removeFile(row.result_file)
@@ -550,6 +562,7 @@ export const createImageJobProxy = (options = {}) => {
     `).all(now - config.successTtlMs, now - config.failureTtlMs)
     for (const row of rows) {
       transact(() => db.prepare('DELETE FROM jobs WHERE id = ? AND status = ?').run(row.id, row.status))
+      removeResultImages(row.id)
       for (const file of [row.request_file, row.headers_file, row.result_file, row.result_meta_file]) {
         removeFileQuietly(file)
       }
@@ -561,6 +574,162 @@ export const createImageJobProxy = (options = {}) => {
     queuedIds.add(id)
     queue.push(id)
     queueMicrotask(() => void pump())
+  }
+
+  const downloadResultImage = async (entry, imageUrl, imageLog) => {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), config.resultImageTimeoutMs)
+      timeout.unref()
+      const signal = AbortSignal.any([controller.signal, entry.controller.signal])
+      let response
+      try {
+        if (entry.controller.signal.aborted) throw new HttpError(404, 'job_not_found')
+        let target = new URL(imageUrl)
+        for (let redirectCount = 0; redirectCount <= MAX_RESULT_IMAGE_REDIRECTS; redirectCount += 1) {
+          imageLog.imageHostname = target.hostname.toLowerCase()
+          if (
+            !['http:', 'https:'].includes(target.protocol)
+            || target.username
+            || target.password
+            || target.hash
+            || !isAllowedResultImageHost(imageLog.imageHostname, config.resultImageHosts)
+          ) {
+            throw new HttpError(502, 'result_image_host_not_allowed')
+          }
+          response = await fetch(target, { redirect: 'manual', signal })
+          imageLog.imageStatus = response.status
+          if (!RESULT_IMAGE_REDIRECT_STATUSES.has(response.status)) break
+          await response.body?.cancel()
+          if (redirectCount === MAX_RESULT_IMAGE_REDIRECTS) throw new HttpError(502, 'invalid_result_image_redirect')
+          const location = response.headers.get('location')
+          if (!location) throw new HttpError(502, 'invalid_result_image_redirect')
+          try {
+            target = new URL(location, target)
+          } catch {
+            throw new HttpError(502, 'invalid_result_image_redirect')
+          }
+        }
+
+        if (!response?.ok || !response.body) throw new HttpError(502, 'result_image_download_failed')
+        const contentType = response.headers.get('content-type') || 'application/octet-stream'
+        if (!contentType.toLowerCase().startsWith('image/')) throw new HttpError(502, 'invalid_result_image_type')
+        const lengthHeader = response.headers.get('content-length')
+        const length = !response.headers.get('content-encoding') && lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : null
+        if (length !== null && (!Number.isSafeInteger(length) || length > config.maxResultBytes)) {
+          throw new HttpError(413, 'result_image_too_large')
+        }
+
+        // 完整图片加密落盘后再交付，避免把已发出 200 的半张图片当作成功结果。
+        const result = await writeEncryptedStream({
+          readable: Readable.fromWeb(response.body),
+          target: entry.file,
+          key,
+          maxBytes: config.maxResultBytes,
+          checkDisk,
+          reserveDisk,
+          protectedFiles,
+          expectedBytes: length ?? config.maxResultBytes,
+        })
+        if (!result.size || (length !== null && result.size !== length)) {
+          throw new HttpError(502, 'result_image_download_failed')
+        }
+        if (entry.controller.signal.aborted || !rowForId.get(entry.jobId)) {
+          throw new HttpError(404, 'job_not_found')
+        }
+        entry.contentType = contentType
+        entry.size = result.size
+        entry.status = 'ready'
+        logResultImage(imageLog)
+        return
+      } catch (err) {
+        const error = entry.controller.signal.aborted
+          ? new HttpError(404, 'job_not_found')
+          : controller.signal.aborted
+            ? new HttpError(504, 'result_image_timeout')
+            : err instanceof HttpError
+              ? err.code === 'body_too_large' ? new HttpError(413, 'result_image_too_large') : err
+              : new HttpError(502, 'result_image_download_failed')
+        removeFileQuietly(entry.file)
+        logResultImage({ ...imageLog, failureStage: 'image_download', errorCode: error.code })
+        const retryable = ['result_image_download_failed', 'result_image_timeout'].includes(error.code)
+        if (!retryable || attempt === 2) throw error
+      } finally {
+        clearTimeout(timeout)
+        if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {})
+      }
+      await wait(config.retryBaseDelayMs)
+    }
+  }
+
+  const getResultImage = async (row, imageIndex) => {
+    const cacheKey = `${row.id}:${imageIndex}`
+    const cached = resultImages.get(cacheKey)
+    if (cached) return cached
+    const imageLog = {
+      jobId: row.id,
+      upstreamRequestId: null,
+      responseShape: null,
+      imageHostname: null,
+      imageStatus: null,
+    }
+    try {
+      if (!row.result_file || !row.result_meta_file) throw new HttpError(409, 'result_not_available')
+      const meta = await readEncryptedJson(row.result_meta_file, key)
+      imageLog.upstreamRequestId = meta.upstreamRequestId
+      if (!String(meta.contentType || '').toLowerCase().includes('json')) throw new HttpError(404, 'result_image_not_available')
+      const payload = await readEncryptedJson(row.result_file, key, Math.min(config.maxResultBytes, MAX_RESULT_IMAGE_JSON_BYTES))
+      const dataUrl = payload?.data?.[imageIndex]?.url
+      const topLevelUrl = imageIndex === 0 ? payload?.url : null
+      const imageUrl = typeof dataUrl === 'string' ? dataUrl : topLevelUrl
+      imageLog.responseShape = typeof dataUrl === 'string' ? 'data_url' : typeof topLevelUrl === 'string' ? 'top_level_url' : 'unrecognized'
+      if (typeof imageUrl !== 'string') throw new HttpError(404, 'result_image_not_available')
+      let target
+      try {
+        target = new URL(imageUrl)
+      } catch {
+        throw new HttpError(502, 'invalid_result_image_url')
+      }
+      imageLog.imageHostname = target.hostname.toLowerCase()
+      if (
+        !['http:', 'https:'].includes(target.protocol)
+        || target.username || target.password || target.hash
+        || !isAllowedResultImageHost(imageLog.imageHostname, config.resultImageHosts)
+      ) throw new HttpError(502, 'result_image_host_not_allowed')
+
+      // 解密期间可能已有另一个读取请求创建了缓存，同一原图只启动一次下载。
+      const current = rowForId.get(row.id)
+      if (!current || current.token_digest !== row.token_digest || current.result_digest !== row.result_digest) {
+        throw new HttpError(404, 'job_not_found')
+      }
+      const pending = resultImages.get(cacheKey)
+      if (pending) return pending
+      if (closing || [...resultImages.values()].filter((entry) => entry.status === 'downloading').length >= config.maxConcurrency) {
+        throw new HttpError(503, 'result_image_download_busy')
+      }
+      const entry = {
+        jobId: row.id,
+        file: filePath(`${jobFileStem(row.id)}.image-${imageIndex}-${randomBytes(6).toString('hex')}.enc`),
+        controller: new AbortController(),
+        status: 'downloading',
+        contentType: null,
+        size: null,
+        error: null,
+        promise: null,
+      }
+      resultImages.set(cacheKey, entry)
+      protectedFiles.add(entry.file)
+      entry.promise = downloadResultImage(entry, imageUrl, imageLog).catch((err) => {
+        entry.status = 'failed'
+        entry.error = err
+        protectedFiles.delete(entry.file)
+        removeFileQuietly(entry.file)
+      })
+      return entry
+    } catch (err) {
+      logResultImage({ ...imageLog, failureStage: 'result_parse', errorCode: err instanceof HttpError ? err.code : 'internal_error' })
+      throw err
+    }
   }
 
   const dispatch = async (id) => {
@@ -1019,117 +1188,23 @@ export const createImageJobProxy = (options = {}) => {
 
       const row = requireJob(id, token)
       if (req.method === 'GET' && resultImageIndex !== null) {
-        let upstreamRequestId = null
-        let responseShape = null
-        let imageHostname = null
-        let imageStatus = null
-        let failureStage = 'result_parse'
-        try {
-          if (!row.result_file || !row.result_meta_file) throw new HttpError(409, 'result_not_available')
-          const meta = await readEncryptedJson(row.result_meta_file, key)
-          upstreamRequestId = meta.upstreamRequestId
-          if (!String(meta.contentType || '').toLowerCase().includes('json')) {
-            throw new HttpError(404, 'result_image_not_available')
-          }
-          const payload = await readEncryptedJson(row.result_file, key, Math.min(config.maxResultBytes, MAX_RESULT_IMAGE_JSON_BYTES))
-          const dataImageUrl = payload?.data?.[resultImageIndex]?.url
-          const topLevelImageUrl = resultImageIndex === 0 ? payload?.url : null
-          const imageUrl = typeof dataImageUrl === 'string' ? dataImageUrl : topLevelImageUrl
-          responseShape = typeof dataImageUrl === 'string'
-            ? 'data_url'
-            : typeof topLevelImageUrl === 'string'
-              ? 'top_level_url'
-              : 'unrecognized'
-          if (typeof imageUrl !== 'string') throw new HttpError(404, 'result_image_not_available')
-
-          let target
-          try {
-            target = new URL(imageUrl)
-          } catch {
-            throw new HttpError(502, 'invalid_result_image_url')
-          }
-
-          const controller = new AbortController()
-          const timeout = setTimeout(() => controller.abort(), config.resultImageTimeoutMs)
-          timeout.unref()
-          const abortOnClose = () => {
-            if (!res.writableEnded) controller.abort()
-          }
-          res.once('close', abortOnClose)
-          try {
-            let response
-            for (let redirectCount = 0; redirectCount <= MAX_RESULT_IMAGE_REDIRECTS; redirectCount += 1) {
-              imageHostname = target.hostname.toLowerCase()
-              if (
-                !['http:', 'https:'].includes(target.protocol)
-                || target.username
-                || target.password
-                || target.hash
-                || !isAllowedResultImageHost(imageHostname, config.resultImageHosts)
-              ) {
-                throw new HttpError(502, 'result_image_host_not_allowed')
-              }
-
-              failureStage = 'image_download'
-              response = await fetch(target, { redirect: 'manual', signal: controller.signal })
-              imageStatus = response.status
-              if (!RESULT_IMAGE_REDIRECT_STATUSES.has(response.status)) break
-              if (redirectCount === MAX_RESULT_IMAGE_REDIRECTS) throw new HttpError(502, 'invalid_result_image_redirect')
-              const location = response.headers.get('location')
-              if (!location) throw new HttpError(502, 'invalid_result_image_redirect')
-              try {
-                target = new URL(location, target)
-              } catch {
-                throw new HttpError(502, 'invalid_result_image_redirect')
-              }
-            }
-
-            if (!response?.ok || !response.body) throw new HttpError(502, 'result_image_download_failed')
-            const contentType = response.headers.get('content-type') || 'application/octet-stream'
-            if (!contentType.toLowerCase().startsWith('image/')) throw new HttpError(502, 'invalid_result_image_type')
-            const lengthHeader = response.headers.get('content-length')
-            const length = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : null
-            if (length !== null && (!Number.isSafeInteger(length) || length > config.maxResultBytes)) {
-              throw new HttpError(413, 'result_image_too_large')
-            }
-
-            let size = 0
-            const limiter = new Transform({
-              transform(chunk, _encoding, callback) {
-                size += chunk.length
-                if (size > config.maxResultBytes) {
-                  callback(new HttpError(413, 'result_image_too_large'))
-                  return
-                }
-                callback(null, chunk)
-              },
-            })
-            res.writeHead(200, {
-              'cache-control': 'no-store',
-              'content-type': contentType,
-              ...(length !== null ? { 'content-length': length } : {}),
-            })
-            await pipeline(Readable.fromWeb(response.body), limiter, res)
-            logResultImage({ jobId: id, upstreamRequestId, responseShape, imageHostname, imageStatus })
-          } catch (err) {
-            if (controller.signal.aborted && !res.destroyed) throw new HttpError(504, 'result_image_timeout')
-            throw err
-          } finally {
-            clearTimeout(timeout)
-            res.off('close', abortOnClose)
-          }
-        } catch (err) {
-          logResultImage({
-            jobId: id,
-            upstreamRequestId,
-            responseShape,
-            imageHostname,
-            imageStatus,
-            failureStage,
-            errorCode: err instanceof HttpError ? err.code : 'internal_error',
-          })
-          throw err
+        const entry = await getResultImage(row, resultImageIndex)
+        if (entry.status === 'downloading' && getHeader(req, 'x-image-result-mode') === 'async') {
+          sendJson(res, 202, { status: 'downloading' })
+          return
         }
+        await entry.promise
+        if (entry.status === 'failed') {
+          if (resultImages.get(`${id}:${resultImageIndex}`) === entry) resultImages.delete(`${id}:${resultImageIndex}`)
+          throw entry.error
+        }
+        if (res.destroyed) return
+        res.writeHead(200, {
+          'cache-control': 'no-store',
+          'content-type': entry.contentType,
+          'content-length': entry.size,
+        })
+        await pipeline(createDecryptedStream(entry.file, key), res)
         return
       }
 
@@ -1229,12 +1304,14 @@ export const createImageJobProxy = (options = {}) => {
     if (closing) return
     closing = true
     if (cleanupTimer) clearInterval(cleanupTimer)
+    if (force) for (const entry of resultImages.values()) entry.controller.abort()
     await new Promise((resolve) => server.close(() => resolve()))
     if (force) {
       forceClosing = true
       for (const controller of dispatchControllers.values()) controller.abort()
     }
     await Promise.allSettled([...dispatchPromises])
+    await Promise.allSettled([...resultImages.values()].map((entry) => entry.promise))
     db.close()
   }
 

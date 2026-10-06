@@ -1005,7 +1005,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, re
   } catch (err) {
     if ((existingJob || serverJobCreated) && !isServerImageJobTerminalError(err)) {
       if (isServerImageJobRecoverableError(err) || isServerImageJobResultError(err)) throw err
-      const resultError = new ServerImageJobResultError('结果格式无法识别。', 'result_image_not_available', false, err)
+      const resultError = new ServerImageJobResultError('结果格式无法识别。\n提示：任务可能已生成但结果未能读取；请先查看历史任务，确认没有成功后再重试，并提交完整报错。', 'result_image_not_available', false, err)
       if (err instanceof Error && 'rawResponsePayload' in err) (resultError as any).rawResponsePayload = (err as any).rawResponsePayload
       throw resultError
     }

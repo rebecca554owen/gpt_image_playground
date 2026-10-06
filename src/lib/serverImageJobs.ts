@@ -37,16 +37,18 @@ const SERVER_JOB_ERROR_MESSAGES: Record<string, string> = {
   request_storage_error: '任务请求未能安全保存，尚未提交到上游，请重试。',
   invalid_result_image_redirect: '图片 CDN 返回了不安全或无效的跳转地址。',
   invalid_result_image_type: '结果地址返回的内容不是图片。',
-  invalid_result_image_url: '结果格式无法识别。',
+  invalid_result_image_url: '结果格式无法识别。\n提示：任务可能已生成但返回地址无法读取；请先查看历史任务，确认没有成功后再重试，并提交完整报错。',
   result_image_download_failed: '图片 CDN 暂时不可访问。',
+  result_image_download_busy: '图片已生成，正在等待读取原图，请稍后继续查看。',
   result_image_host_not_allowed: '图片已生成，但图片域名未获允许。\n提示：请勿重复生成；请复制完整报错并提交工单，修复后可重新读取原任务。',
-  result_image_not_available: '结果格式无法识别。',
+  result_image_not_available: '结果格式无法识别。\n提示：任务可能已生成但结果未能读取；请先查看历史任务，确认没有成功后再重试，并提交完整报错。',
   result_image_timeout: '图片 CDN 暂时不可访问。',
   result_image_too_large: '图片过大，无法安全读取。',
 }
 
 const RETRYABLE_RESULT_IMAGE_ERROR_CODES = new Set([
   'result_image_download_failed',
+  'result_image_download_busy',
   'result_image_timeout',
 ])
 
@@ -347,21 +349,58 @@ export async function fetchServerImageJobResultImage(
   imageIndex: number,
   fallbackMime: string,
   signal?: AbortSignal,
+  options: { pollIntervalMs?: number; retryDelayMs?: number; timeoutMs?: number } = {},
 ) {
-  const response = await fetch(getJobUrl(ref.jobId, `/result-images/${imageIndex}`), {
-    headers: getJobHeaders(ref.token),
-    cache: 'no-store',
-    signal,
-  }).catch((err) => {
-    throw new ServerImageJobResultError('图片 CDN 暂时不可访问。', null, true, err)
-  })
-  if (!response.ok) {
-    const error = await readServerJobError(response, `生成结果图片读取失败：HTTP ${response.status}`)
-    throw new ServerImageJobResultError(
-      error.message,
-      error.code,
-      Boolean(error.code && RETRYABLE_RESULT_IMAGE_ERROR_CODES.has(error.code)) || (!error.code && isRecoverableStatus(response.status)),
-    )
+  const controller = new AbortController()
+  const onAbort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) onAbort()
+  signal?.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 180_000)
+  let failures = 0
+  try {
+    for (;;) {
+      try {
+        if (controller.signal.aborted) throw controller.signal.reason
+        const response = await fetch(getJobUrl(ref.jobId, `/result-images/${imageIndex}`), {
+          headers: { ...getJobHeaders(ref.token), 'X-Image-Result-Mode': 'async' },
+          cache: 'no-store',
+          signal: controller.signal,
+        })
+        if (response.status === 202) {
+          const state = await response.json() as { status?: string }
+          if (state.status !== 'downloading') throw new ServerImageJobResultError('结果格式无法识别。', 'result_image_not_available', false)
+          await sleep(options.pollIntervalMs ?? 1_000, controller.signal)
+          continue
+        }
+        if (!response.ok) {
+          const error = await readServerJobError(response, `生成结果图片读取失败：HTTP ${response.status}`)
+          if (error.code === 'result_image_download_busy') {
+            await sleep(options.pollIntervalMs ?? 1_000, controller.signal)
+            continue
+          }
+          throw new ServerImageJobResultError(
+            error.message,
+            error.code,
+            Boolean(error.code && RETRYABLE_RESULT_IMAGE_ERROR_CODES.has(error.code)) || (!error.code && isRecoverableStatus(response.status)),
+          )
+        }
+        const blob = await response.blob()
+        if (!blob.size) throw new ServerImageJobResultError('图片 CDN 暂时不可访问。', 'result_image_download_failed', true)
+        return await blobToDataUrl(blob, fallbackMime)
+      } catch (err) {
+        const error = err instanceof ServerImageJobResultError
+          ? err
+          : new ServerImageJobResultError('图片已生成，但读取暂时中断。请稍后继续查看原任务，不必重新生成。', null, true, err)
+        failures += 1
+        if (controller.signal.aborted || !error.retryable || failures >= 3) throw error
+        // 只重读同一任务的结果，绝不在取图失败后重新提交生图请求。
+        await sleep(options.retryDelayMs ?? 1_000, controller.signal).catch((cause) => {
+          throw new ServerImageJobResultError('图片已生成，但读取暂时中断。请稍后继续查看原任务，不必重新生成。', null, true, cause)
+        })
+      }
+    }
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
   }
-  return blobToDataUrl(await response.blob(), fallbackMime)
 }

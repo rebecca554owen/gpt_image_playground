@@ -242,7 +242,7 @@ describe('server image jobs', () => {
     [504, 'result_image_timeout', true, '图片 CDN 暂时不可访问。'],
     [502, 'result_image_host_not_allowed', false, '图片已生成，但图片域名未获允许。\n提示：请勿重复生成；请复制完整报错并提交工单，修复后可重新读取原任务。'],
     [413, 'result_image_too_large', false, '图片过大，无法安全读取。'],
-    [404, 'result_image_not_available', false, '结果格式无法识别。'],
+    [404, 'result_image_not_available', false, '结果格式无法识别。\n提示：任务可能已生成但结果未能读取；请先查看历史任务，确认没有成功后再重试，并提交完整报错。'],
   ])('classifies result image error %s %s with finite retry metadata', async (status, code, retryable, message) => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: code }, { status })))
     const { fetchServerImageJobResultImage, isServerImageJobResultError } = await loadModule()
@@ -251,6 +251,8 @@ describe('server image jobs', () => {
       { jobId: 'saved-job', token: 'saved-token', requestIndex: 0 },
       0,
       'image/png',
+      undefined,
+      { retryDelayMs: 0 },
     )
 
     await expect(request).rejects.toSatisfy((err: unknown) =>
@@ -258,6 +260,87 @@ describe('server image jobs', () => {
       && err.retryable === retryable
       && err.message === message,
     )
+  })
+
+  it('polls only the saved image while its encrypted cache is downloading', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ status: 'downloading' }, { status: 202 }))
+      .mockResolvedValueOnce(Response.json({ status: 'downloading' }, { status: 202 }))
+      .mockResolvedValueOnce(new Response(new Blob(['complete-image'], { type: 'image/png' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchServerImageJobResultImage } = await loadModule()
+    const result = await fetchServerImageJobResultImage(
+      { jobId: 'saved-job', token: 'saved-token', requestIndex: 0 }, 0, 'image/png', undefined,
+      { pollIntervalMs: 0 },
+    )
+    expect(result).toMatch(/^data:image\/png;base64,/)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(url).toBe('/task-api/v1/jobs/saved-job/result-images/0')
+      expect(init?.method).not.toBe('PUT')
+      expect(init?.headers).toEqual({ 'X-Task-Token': 'saved-token', 'X-Image-Result-Mode': 'async' })
+    }
+  })
+
+  it('recovers a truncated HTTP 200 image body without submitting generation again', async () => {
+    const truncated = new Response(null, { headers: { 'content-type': 'image/png' } })
+    vi.spyOn(truncated, 'blob').mockRejectedValueOnce(new TypeError('terminated'))
+    const fetchMock = vi.fn().mockResolvedValueOnce(truncated)
+      .mockResolvedValueOnce(new Response(new Blob(['recovered-image'], { type: 'image/png' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchServerImageJobResultImage } = await loadModule()
+    const result = await fetchServerImageJobResultImage(
+      { jobId: 'saved-job', token: 'saved-token', requestIndex: 0 }, 0, 'image/png', undefined,
+      { retryDelayMs: 0 },
+    )
+    expect(result).toMatch(/^data:image\/png;base64,/)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.every(([url, init]) => String(url).endsWith('/result-images/0') && init?.method !== 'PUT')).toBe(true)
+  })
+
+  it('waits for image download capacity without consuming the transient failure budget', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    for (let i = 0; i < 4; i += 1) {
+      fetchMock.mockResolvedValueOnce(Response.json({ error: 'result_image_download_busy' }, { status: 503 }))
+    }
+    fetchMock.mockResolvedValueOnce(new Response(new Blob(['queued-image'], { type: 'image/png' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchServerImageJobResultImage } = await loadModule()
+    const result = await fetchServerImageJobResultImage(
+      { jobId: 'saved-job', token: 'saved-token', requestIndex: 0 }, 0, 'image/png', undefined,
+      { pollIntervalMs: 0 },
+    )
+    expect(result).toMatch(/^data:image\/png;base64,/)
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock.mock.calls.every(([url, init]) => String(url).endsWith('/result-images/0') && init?.method !== 'PUT')).toBe(true)
+  })
+
+  it('bounds transient image retries and never retries invalid task credentials', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => { throw new TypeError('connection reset') })
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchServerImageJobResultImage, isServerImageJobResultError } = await loadModule()
+    const ref = { jobId: 'saved-job', token: 'saved-token', requestIndex: 0 }
+    await expect(fetchServerImageJobResultImage(ref, 0, 'image/png', undefined, { retryDelayMs: 0 })).rejects.toSatisfy(isServerImageJobResultError)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    fetchMock.mockReset().mockResolvedValue(Response.json({ error: 'invalid_task_token' }, { status: 403 }))
+    await expect(fetchServerImageJobResultImage(ref, 0, 'image/png')).rejects.toSatisfy((err: unknown) => isServerImageJobResultError(err) && !err.retryable)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops polling original images when the caller cancels or the total wait expires', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      controller.abort()
+      return Response.json({ status: 'downloading' }, { status: 202 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchServerImageJobResultImage, isServerImageJobResultError } = await loadModule()
+    const ref = { jobId: 'saved-job', token: 'saved-token', requestIndex: 0 }
+    await expect(fetchServerImageJobResultImage(ref, 0, 'image/png', controller.signal)).rejects.toSatisfy(isServerImageJobResultError)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fetchMock.mockReset().mockResolvedValue(Response.json({ status: 'downloading' }, { status: 202 }))
+    await expect(fetchServerImageJobResultImage(ref, 0, 'image/png', undefined, { timeoutMs: 10, pollIntervalMs: 1 })).rejects.toSatisfy(isServerImageJobResultError)
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith('/result-images/0'))).toBe(true)
   })
 
   it.each([

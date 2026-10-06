@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, test } from 'node:test'
+import { gzipSync } from 'node:zlib'
 
 import { createImageJobProxy, isAllowedResultImageHost } from './image-job-proxy.mjs'
 
@@ -393,6 +394,157 @@ test('图片编辑的顶层 URL 结果通过任务代理下载且日志不包含
   assert.equal(JSON.stringify(imageLog).includes('signature'), false)
 })
 
+const readReadyImage = async (fixture, id, token) => {
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const response = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+      headers: { 'x-task-token': token, 'x-image-result-mode': 'async' },
+    })
+    if (response.status !== 202) return response
+    assert.deepEqual(await response.json(), { status: 'downloading' })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert.fail('结果图片未在限定时间内完成下载')
+}
+
+test('图片下载断流只重读原图，完整加密缓存可复用并随任务删除', async () => {
+  const expected = Buffer.from('complete-private-image-after-truncated-first-download')
+  let imageRequests = 0
+  let generationRequests = 0
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url === '/image.png') {
+      imageRequests += 1
+      res.writeHead(200, { 'content-length': expected.length, 'content-type': 'image/png' })
+      if (imageRequests === 1) {
+        res.write(expected.subarray(0, 4))
+        setTimeout(() => res.destroy(), 5)
+        return
+      }
+      res.end(expected)
+      return
+    }
+    generationRequests += 1
+    await readRequest(req)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ data: [{ url: `http://127.0.0.1:${req.socket.localPort}/image.png` }] }))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1', IMAGE_JOB_CLEANUP_INTERVAL_MS: '100' })
+  const id = randomUUID()
+  const token = randomUUID()
+  await putJob(fixture, { id, token })
+  await waitForTerminal(fixture, id, token)
+
+  const result = await readReadyImage(fixture, id, token)
+  assert.equal(result.status, 200)
+  assert.deepEqual(Buffer.from(await result.arrayBuffer()), expected)
+  assert.equal(imageRequests, 2)
+  assert.equal(generationRequests, 1)
+  const cacheFiles = readdirSync(fixture.dataDir).filter((name) => /\.image-0-[a-f0-9]+\.enc$/.test(name))
+  assert.equal(cacheFiles.length, 1)
+  assert.equal(readFileSync(path.join(fixture.dataDir, cacheFiles[0])).includes(expected), false)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  const cached = await readReadyImage(fixture, id, token)
+  assert.deepEqual(Buffer.from(await cached.arrayBuffer()), expected)
+  assert.equal(imageRequests, 2)
+  const forbidden = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': randomUUID(), 'x-image-result-mode': 'async' },
+  })
+  assert.equal(forbidden.status, 403)
+  const deleted = await fetch(`${fixture.baseUrl}/v1/jobs/${id}`, { method: 'DELETE', headers: { 'x-task-token': token } })
+  assert.equal(deleted.status, 204)
+  assert.equal(existsSync(path.join(fixture.dataDir, cacheFiles[0])), false)
+})
+
+test('异步取图短请求和并发读取共享一次下载，取消客户端后仍可恢复原图', async () => {
+  const expected = Buffer.from('shared-result-image')
+  let imageRequests = 0
+  let markStarted
+  const started = new Promise((resolve) => { markStarted = resolve })
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url === '/shared.png') {
+      imageRequests += 1
+      markStarted()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      res.writeHead(200, { 'content-type': 'image/png' })
+      res.end(expected)
+      return
+    }
+    await readRequest(req)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ url: `http://127.0.0.1:${req.socket.localPort}/shared.png` }))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  const id = randomUUID()
+  const token = randomUUID()
+  await putJob(fixture, { id, token })
+  await waitForTerminal(fixture, id, token)
+  const controller = new AbortController()
+  const legacy = fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': token }, signal: controller.signal,
+  })
+  legacy.catch(() => {})
+  await started
+  controller.abort()
+  await assert.rejects(legacy)
+  const pending = await Promise.all([0, 1].map(() => fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': token, 'x-image-result-mode': 'async' },
+  })))
+  for (const response of pending) {
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), { status: 'downloading' })
+  }
+  const result = await readReadyImage(fixture, id, token)
+  assert.deepEqual(Buffer.from(await result.arrayBuffer()), expected)
+  assert.equal(imageRequests, 1)
+})
+
+test('删除下载中的任务后复用 id，新任务和旧下载的缓存及凭证相互隔离', async () => {
+  let markStarted
+  const started = new Promise((resolve) => { markStarted = resolve })
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url === '/old.png') {
+      markStarted()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      if (!res.destroyed) {
+        res.writeHead(200, { 'content-type': 'image/png' })
+        res.end('old-private-image')
+      }
+      return
+    }
+    if (req.url === '/new.png') {
+      res.writeHead(200, { 'content-type': 'image/png' })
+      res.end('new-private-image')
+      return
+    }
+    const body = JSON.parse((await readRequest(req)).toString())
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ url: `http://127.0.0.1:${req.socket.localPort}/${body.prompt}.png` }))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  const id = randomUUID()
+  const oldToken = randomUUID()
+  await putJob(fixture, { id, token: oldToken, body: '{"prompt":"old"}' })
+  await waitForTerminal(fixture, id, oldToken)
+  const pending = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': oldToken, 'x-image-result-mode': 'async' },
+  })
+  assert.equal(pending.status, 202)
+  await started
+  assert.equal((await fetch(`${fixture.baseUrl}/v1/jobs/${id}`, {
+    method: 'DELETE', headers: { 'x-task-token': oldToken },
+  })).status, 204)
+  const token = randomUUID()
+  await putJob(fixture, { id, token, body: '{"prompt":"new"}' })
+  await waitForTerminal(fixture, id, token)
+  const result = await readReadyImage(fixture, id, token)
+  assert.equal(result.status, 200)
+  assert.equal(await result.text(), 'new-private-image')
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  const cached = await readReadyImage(fixture, id, token)
+  assert.equal(await cached.text(), 'new-private-image')
+  assert.equal((await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, {
+    headers: { 'x-task-token': oldToken },
+  })).status, 403)
+  assert.equal(readdirSync(fixture.dataDir).filter((name) => /\.image-0-[a-f0-9]+\.enc$/.test(name)).length, 1)
+})
+
 test('顶层 URL 与超过 1MB 的 Base64 同时返回时仍可下载原图', async () => {
   const expected = Buffer.from('large-json-top-level-image')
   const fixture = await createFixture(async (req, res) => {
@@ -419,6 +571,29 @@ test('顶层 URL 与超过 1MB 的 Base64 同时返回时仍可下载原图', as
   })
   assert.equal(result.status, 200)
   assert.deepEqual(Buffer.from(await result.arrayBuffer()), expected)
+})
+
+test('图片 CDN 压缩响应按解压后的真实图片长度缓存和交付', async () => {
+  const expected = Buffer.from('compressed-image-content'.repeat(100))
+  const compressed = gzipSync(expected)
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url === '/compressed.png') {
+      res.writeHead(200, { 'content-encoding': 'gzip', 'content-length': compressed.length, 'content-type': 'image/png' })
+      res.end(compressed)
+      return
+    }
+    await readRequest(req)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ url: `http://127.0.0.1:${req.socket.localPort}/compressed.png` }))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  const id = randomUUID()
+  const token = randomUUID()
+  await putJob(fixture, { id, token })
+  await waitForTerminal(fixture, id, token)
+  const response = await readReadyImage(fixture, id, token)
+  assert.equal(response.status, 200)
+  assert.equal(Number(response.headers.get('content-length')), expected.length)
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), expected)
 })
 
 test('结果图片下载逐跳校验域名并拒绝非图片、超大和超时响应', async () => {
@@ -488,12 +663,25 @@ test('结果图片下载逐跳校验域名并拒绝非图片、超大和超时�
 })
 
 test('结果图片域名仅匹配精确主机或配置的子域后缀', () => {
-  const rules = new Set(['imagefil.scdn.app', '*.000000033.xyz', 'ztyunjuan.com', 'image.klong.lat', 'rolldek.com'])
+  const compose = readFileSync(path.join(process.cwd(), 'deploy/docker-compose.image-jobs.yml'), 'utf8')
+  const rules = new Set(compose.match(/IMAGE_JOB_RESULT_IMAGE_HOSTS: ([^\n]+)/)[1].split(','))
   assert.equal(isAllowedResultImageHost('imagefil.scdn.app', rules), true)
   assert.equal(isAllowedResultImageHost('cdn.000000033.xyz', rules), true)
   assert.equal(isAllowedResultImageHost('ztyunjuan.com', rules), true)
   assert.equal(isAllowedResultImageHost('image.klong.lat', rules), true)
   assert.equal(isAllowedResultImageHost('rolldek.com', rules), true)
+  assert.equal(isAllowedResultImageHost('fmt52jlx36ddnxf4fp47sgvw900it2n2-000.thelichking.xyz', rules), true)
+  assert.equal(isAllowedResultImageHost('rotated-cdn.thelichking.xyz', rules), true)
+  assert.equal(isAllowedResultImageHost('cdn-1.r2.lat', rules), true)
+  assert.equal(isAllowedResultImageHost('pub-13fd1d3607a441b4a9d232b3a223f5f6.r2.dev', rules), true)
+  assert.equal(isAllowedResultImageHost('another-bucket.r2.dev', rules), false)
+  assert.equal(isAllowedResultImageHost('pub-13fd1d3607a441b4a9d232b3a223f5f6.r2.dev.evil.example', rules), false)
+  assert.equal(isAllowedResultImageHost('cdn-2.r2.lat', rules), false)
+  assert.equal(isAllowedResultImageHost('fakecdn-1.r2.lat', rules), false)
+  assert.equal(isAllowedResultImageHost('thelichking.xyz', rules), false)
+  assert.equal(isAllowedResultImageHost('fakethelichking.xyz', rules), false)
+  assert.equal(isAllowedResultImageHost('cdn.thelichking.xyz.evil.example', rules), false)
+  assert.equal(isAllowedResultImageHost('127.0.0.1', rules), false)
   assert.equal(isAllowedResultImageHost('000000033.xyz', rules), false)
   assert.equal(isAllowedResultImageHost('fake000000033.xyz', rules), false)
   assert.equal(isAllowedResultImageHost('cdn.ztyunjuan.com', rules), false)
