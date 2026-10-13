@@ -1,6 +1,7 @@
 import type { ServerImageJobRef } from '../types'
 import { blobToDataUrl } from './dataUrl'
 import { readRuntimeEnv } from './runtimeEnv'
+import { RESULT_IMAGE_DOWNLOAD_ERROR_HINT, RESULT_IMAGE_DOWNLOAD_ERROR_MESSAGE, RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_HINT, RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_MESSAGE } from './imageApiShared'
 
 const SERVER_IMAGE_JOB_API = '/task-api/v1/jobs'
 const API_PROXY_PREFIX = '/api-proxy/'
@@ -38,11 +39,11 @@ const SERVER_JOB_ERROR_MESSAGES: Record<string, string> = {
   invalid_result_image_redirect: '图片 CDN 返回了不安全或无效的跳转地址。',
   invalid_result_image_type: '结果地址返回的内容不是图片。',
   invalid_result_image_url: '结果格式无法识别。\n提示：任务可能已生成但返回地址无法读取；请先查看历史任务，确认没有成功后再重试，并提交完整报错。',
-  result_image_download_failed: '图片 CDN 暂时不可访问。',
+  result_image_download_failed: `${RESULT_IMAGE_DOWNLOAD_ERROR_MESSAGE}\n提示：${RESULT_IMAGE_DOWNLOAD_ERROR_HINT}`,
   result_image_download_busy: '图片已生成，正在等待读取原图，请稍后继续查看。',
-  result_image_host_not_allowed: '图片已生成，但图片域名未获允许。\n提示：请勿重复生成；请复制完整报错并提交工单，修复后可重新读取原任务。',
+  result_image_host_not_allowed: `${RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_MESSAGE}\n提示：${RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_HINT}`,
   result_image_not_available: '结果格式无法识别。\n提示：任务可能已生成但结果未能读取；请先查看历史任务，确认没有成功后再重试，并提交完整报错。',
-  result_image_timeout: '图片 CDN 暂时不可访问。',
+  result_image_timeout: `${RESULT_IMAGE_DOWNLOAD_ERROR_MESSAGE}\n提示：${RESULT_IMAGE_DOWNLOAD_ERROR_HINT}`,
   result_image_too_large: '图片过大，无法安全读取。',
 }
 
@@ -385,7 +386,7 @@ export async function fetchServerImageJobResultImage(
           )
         }
         const blob = await response.blob()
-        if (!blob.size) throw new ServerImageJobResultError('图片 CDN 暂时不可访问。', 'result_image_download_failed', true)
+        if (!blob.size) throw new ServerImageJobResultError(SERVER_JOB_ERROR_MESSAGES.result_image_download_failed, 'result_image_download_failed', true)
         return await blobToDataUrl(blob, fallbackMime)
       } catch (err) {
         const error = err instanceof ServerImageJobResultError

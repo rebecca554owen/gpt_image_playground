@@ -700,10 +700,14 @@ export default function DetailModal() {
                 </>
               )}
               {task.status === 'running' && streamPreviewLen === 0 && (
-                <svg className="w-10 h-10 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
+                <div className="max-w-sm px-6 text-center">
+                  <svg className="mx-auto mb-3 h-10 w-10 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <p className="text-sm text-gray-700 dark:text-gray-200">正在等待生成结果</p>
+                  <p className="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">高分辨率、参考图或服务高峰可能需要更久。请勿重复提交，可在任务记录中继续查看进度。</p>
+                </div>
               )}
             </>
           )}

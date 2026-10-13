@@ -61,6 +61,7 @@ export default function CreationSettings({ profile }: { profile: ApiProfile }) {
               state.setSettings({ profiles: state.settings.profiles.map((item) => item.id === profile.id ? { ...item, ...getImageModelPatch(item, model) } : item) })
             }}
           />
+          <p className="mt-2.5 text-xs leading-5 text-gray-500 dark:text-gray-400">首次使用建议先选 Flare、1K、1 张。生成中请勿重复提交；失败后可在任务详情查看原因和处理建议。</p>
         </section>
         <section aria-labelledby="resolution-title">
           <h3 id="resolution-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">分辨率</h3>

@@ -189,7 +189,7 @@ export default function ImageModelPicker({ value, onChange, allowDefault = false
             </form>
           )}
           <div className="mx-3 border-t border-gray-100 pb-2 pt-3 dark:border-white/[0.06]">
-            <p className="mb-2 text-xs leading-5 text-gray-500 dark:text-gray-400">2.5 官方能力：生成、编辑与透明背景；更好地保留主体。</p>
+            <p className="mb-2 text-xs leading-5 text-gray-500 dark:text-gray-400">速度优先选 Flare，精细创作选 Sunburst。高分辨率、参考图或服务高峰可能延长等待；切换模型会用于新任务。</p>
             <p className="flex gap-2 text-xs leading-5 text-gray-500 dark:text-gray-400"><Info size={16} className="mt-0.5 shrink-0" />需当前 API 渠道支持；费用以服务商计费为准。</p>
           </div>
         </div>,

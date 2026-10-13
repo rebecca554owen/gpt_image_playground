@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { callImageApi } from './api'
+import { IMAGE_TOOL_DROPPED_HINT } from './imageApiShared'
 import { isServerImageJobRecoverableError, isServerImageJobResultError, isServerImageJobTerminalError } from './serverImageJobs'
 
 function createDeferred<T>() {
@@ -29,6 +30,25 @@ async function waitForCondition(assertion: () => void) {
 }
 
 describe('callImageApi', () => {
+  it.each([false, true])('reports a stripped Responses image tool without resubmitting: streamImages=%s', async (streamImages) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      error: { message: "Tool choice 'required' must be specified with 'tools' parameter." },
+    }, { status: 400 }))
+    const profile = createDefaultOpenAIProfile({
+      apiMode: 'responses', model: 'existing-text-model', imageGenerationModel: 'gpt-image-2.5-flare',
+      codexCli: false, apiKey: 'test-key', streamImages,
+    })
+
+    await expect(callImageApi({
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile] }),
+      prompt: 'prompt', params: DEFAULT_PARAMS, inputImageDataUrls: [],
+    })).rejects.toThrow(IMAGE_TOOL_DROPPED_HINT)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      tool_choice: 'required', tools: [{ type: 'image_generation', model: 'gpt-image-2.5-flare' }],
+    })
+  })
+
   it.each(['gpt-image-2.5-sunburst', 'vendor/gpt-image-2.5-custom'])('sends model %s and max quality without replacing the selected model', async (model) => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
       data: [{ b64_json: 'aW1hZ2U=' }], quality: 'max',

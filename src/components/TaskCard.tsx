@@ -5,6 +5,7 @@ import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
+import { normalizeImageApiErrorDisplayText } from '../lib/imageApiShared'
 import { CodeIcon, TransparentBgIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
@@ -327,6 +328,7 @@ export default function TaskCard({
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
+  const errorSummary = task.status === 'error' ? normalizeImageApiErrorDisplayText(task.error || '生成失败').split('\n提示：')[0] : ''
 
   return (
     <div className="relative rounded-xl">
@@ -441,6 +443,7 @@ export default function TaskCard({
                 />
               </svg>
               <span className="text-xs text-gray-400 dark:text-gray-500">生成中...</span>
+              <span className="text-[11px] text-gray-500 dark:text-gray-400">请勿重复提交</span>
             </div>
           )}
           {task.status === 'error' && isReconnecting && (
@@ -478,9 +481,10 @@ export default function TaskCard({
                   d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
               </svg>
-              <span className={`text-xs text-center leading-tight ${isInterrupted ? 'text-yellow-500' : 'text-red-400'}`}>
-                {isInterrupted ? '已停止' : '失败'}
+              <span className={`line-clamp-3 text-xs text-center leading-5 ${isInterrupted ? 'text-yellow-500' : 'text-red-400'}`}>
+                {isInterrupted ? '已停止' : errorSummary}
               </span>
+              {!isInterrupted && <span className="text-[11px] text-gray-500 dark:text-gray-400">点开查看处理建议</span>}
             </div>
           )}
           {task.status === 'done' && thumbSrc && (

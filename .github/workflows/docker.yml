@@ -17,7 +17,8 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, ci-vps]
     permissions:
       contents: read
     steps:
@@ -26,7 +27,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
 
       - run: npm ci
       - run: npm test
@@ -41,6 +41,7 @@ jobs:
           file: deploy/Dockerfile
           platforms: linux/amd64
           push: false
+          cache-from: type=gha,scope=image-playground
 
       - uses: docker/build-push-action@v7
         if: github.event_name == 'pull_request'
@@ -49,11 +50,12 @@ jobs:
           file: deploy/task-proxy.Dockerfile
           platforms: linux/amd64
           push: false
+          cache-from: type=gha,scope=image-task-proxy
 
   publish:
     if: github.event_name != 'pull_request'
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-vps]
     permissions:
       contents: read
       packages: write
@@ -98,6 +100,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=image-playground
+          cache-to: type=gha,scope=image-playground,mode=max
 
       - uses: docker/build-push-action@v7
         with:
@@ -107,3 +111,5 @@ jobs:
           push: true
           tags: ${{ steps.meta-task-proxy.outputs.tags }}
           labels: ${{ steps.meta-task-proxy.outputs.labels }}
+          cache-from: type=gha,scope=image-task-proxy
+          cache-to: type=gha,scope=image-task-proxy,mode=max

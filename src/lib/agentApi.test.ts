@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments } from './agentApi'
+import { IMAGE_TOOL_DROPPED_HINT } from './imageApiShared'
 
 describe('parseBatchImageCallArguments', () => {
   it('normalizes duplicate batch item ids', () => {
@@ -171,6 +172,18 @@ describe('callAgentResponsesApi', () => {
       dataUrl: 'data:image/png;base64,ZmlsZQ==',
       actualParams: {},
     }])
+  })
+
+  it('reports a stripped batch image tool without retrying the generation', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      error: { message: "Tool choice 'required' must be specified with 'tools' parameter." },
+    }, { status: 400 }))
+    const profile = createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses', codexCli: false })
+
+    await expect(callBatchImageSingle({
+      profile, params: DEFAULT_PARAMS, batchItemId: 'batch-tool-test', prompt: 'prompt', referenceImageDataUrls: [],
+    })).resolves.toMatchObject({ image: null, error: expect.stringContaining(IMAGE_TOOL_DROPPED_HINT) })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it.each([false, true])(

@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
 import { ImageSquare } from '@phosphor-icons/react'
 import { ALL_FAVORITES_COLLECTION_ID, getTaskFavoriteCollectionIds, useStore, reuseConfig, editOutputs, removeTask, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { getIndexesInRect } from '../lib/virtualGrid'
+import { useVirtualGrid } from '../hooks/useVirtualGrid'
 import TaskCard from './TaskCard'
 
 export default function TaskGrid() {
@@ -43,6 +45,9 @@ export default function TaskGrid() {
       return taskMatchesSearchQuery(t, q)
     })
   }, [tasks, searchQuery, filterStatus, filterFavorite, activeFavoriteCollectionId])
+  const filteredTasksRef = useRef(filteredTasks)
+  filteredTasksRef.current = filteredTasks
+  const { startIndex, endIndex, paddingTop, paddingBottom, metricsRef } = useVirtualGrid(gridRef, filteredTasks.length)
 
   const handleDelete = (task: typeof tasks[0]) => {
     setConfirmDialog({
@@ -87,24 +92,23 @@ export default function TaskGrid() {
     const minY = Math.min(start.pageY, pageY)
     const maxY = Math.max(start.pageY, pageY)
 
-    const cards = gridRef.current.querySelectorAll('.task-card-wrapper')
+    // 框选需要包含尚未渲染的卡片，因此按完整网格的位置计算。
+    const list = filteredTasksRef.current
+    const gridRect = gridRef.current.getBoundingClientRect()
+    const gridLeft = gridRect.left + window.scrollX
+    const gridTop = gridRect.top + window.scrollY
+    const hit = new Set(getIndexesInRect(list.length, metricsRef.current, {
+      left: minX - gridLeft,
+      right: maxX - gridLeft,
+      top: minY - gridTop,
+      bottom: maxY - gridTop,
+    }))
     const newSelected = new Set(initialSelection.current)
     const initialSelected = new Set(initialSelection.current)
 
-    cards.forEach((card) => {
-      const rect = card.getBoundingClientRect()
-      const taskId = card.getAttribute('data-task-id')
-      if (!taskId) return
-
-      const cardLeft = rect.left + window.scrollX
-      const cardRight = rect.right + window.scrollX
-      const cardTop = rect.top + window.scrollY
-      const cardBottom = rect.bottom + window.scrollY
-
-      const isIntersecting =
-        minX < cardRight && maxX > cardLeft && minY < cardBottom && maxY > cardTop
-
-      if (isIntersecting) {
+    list.forEach((task, idx) => {
+      const taskId = task.id
+      if (hit.has(idx)) {
         if (initialSelected.has(taskId)) {
           newSelected.delete(taskId)
         } else {
@@ -272,10 +276,10 @@ export default function TaskGrid() {
     <div 
       ref={rootRef}
       data-task-grid-root
-      className="relative min-h-[50vh]"
+      className="relative min-h-[50vh] pb-10"
     >
-      <div ref={gridRef} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pb-10">
-        {filteredTasks.map((task) => (
+      <div ref={gridRef} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" style={{ paddingTop, paddingBottom }}>
+        {filteredTasks.slice(startIndex, endIndex).map((task) => (
           <div key={task.id} className="task-card-wrapper" data-task-id={task.id}>
             <TaskCard
               task={task}

@@ -20,11 +20,22 @@ export async function copyImageSourceToClipboard(src: string | Promise<string | 
     throw new Error('Clipboard image API is not available')
   }
 
-  const resolvedSrc = await Promise.resolve(src)
-  if (!resolvedSrc) throw new Error('Image source is not available')
-  const res = await fetch(resolvedSrc)
-  const blob = await res.blob()
-  await writeImageBlobToClipboard(blob)
+  if (!isClipboardTypeSupported('image/png')) {
+    throw new Error('当前浏览器不支持图像剪贴板写入')
+  }
+
+  // 在点击事件内立即请求写入权限，异步取图与格式转换交给 ClipboardItem。
+  const png = (async () => {
+    const resolvedSrc = await src
+    if (!resolvedSrc) throw new Error('Image source is not available')
+    const res = await fetch(resolvedSrc)
+    const blob = await res.blob()
+    if (!blob.type.startsWith('image/')) throw new Error('Clipboard item is not an image')
+    return blob.type === 'image/png' ? blob : await imageBlobToPngBlob(blob)
+  })()
+  // 权限先被拒绝时，取图仍可能失败，避免产生无人接收的 Promise 错误。
+  png.catch(() => {})
+  await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
 }
 
 export function canCopyImageToClipboard() {
@@ -62,31 +73,6 @@ function copyTextWithExecCommand(text: string) {
   } finally {
     document.body.removeChild(textarea)
   }
-}
-
-async function writeImageBlobToClipboard(blob: Blob) {
-  if (!blob.type.startsWith('image/')) throw new Error('Clipboard item is not an image')
-
-  const clipboardItems: Record<string, Blob | Promise<Blob>> = {}
-  const customType = `web ${blob.type}`
-
-  if (isClipboardTypeSupported(customType)) {
-    clipboardItems[customType] = blob
-  }
-
-  if (blob.type === 'image/png') {
-    clipboardItems['image/png'] = blob
-  } else if (isClipboardTypeSupported('image/png')) {
-    clipboardItems['image/png'] = imageBlobToPngBlob(blob)
-  }
-
-  if (Object.keys(clipboardItems).length === 0) {
-    throw new Error('当前浏览器不支持图像剪贴板写入')
-  }
-
-  await navigator.clipboard.write([
-    new ClipboardItem(clipboardItems),
-  ])
 }
 
 function isClipboardTypeSupported(type: string) {

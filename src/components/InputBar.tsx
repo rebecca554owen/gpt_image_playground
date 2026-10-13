@@ -7,7 +7,8 @@ import { getActiveApiProfile, getAgentImageApiProfile, normalizeSettings } from 
 import { getImageGenerationModel, getImageModelPatch, isGptImage25Model } from '../lib/imageModels'
 import { isSizeManagedImageProfile } from '../lib/imageModelSelection'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
-import { getAtImageQuery, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, getSelectedImageMentionLabel, getSelectedTextMentionLabel, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
+import { getAtImageQuery, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
+import { getMentionTagHtml } from '../lib/mentionHtml'
 import { normalizeImageSize } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { getSafeBoundingClientRect } from '../lib/domRect'
@@ -181,18 +182,6 @@ function getContentEditablePlainText(el: HTMLElement): string {
   }
   el.childNodes.forEach(appendNodeText)
   return text.replace(/\r\n?/g, '\n')
-}
-
-function escapeHtml(text: string) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function getMentionTagHtml(text: string) {
-  return `<span contenteditable="false" class="mention-tag" data-mention-text="${escapeHtml(getSelectedTextMentionLabel(text))}">${escapeHtml(text)}</span>`
 }
 
 function syncMentionTagSelection(el: HTMLElement) {
@@ -1462,7 +1451,7 @@ export default function InputBar({ showCreationSettings = false }: { showCreatio
     const html = prompt
       ? parts.map((part) =>
           part.type === 'mention'
-              ? `<span contenteditable="false" class="mention-tag" data-mention-text="${part.mentionText ?? getSelectedImageMentionLabel(part.imageIndex ?? 0)}">${part.text}</span>`
+              ? getMentionTagHtml(part.text, part.mentionText)
             : part.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         ).join('')
       : ''

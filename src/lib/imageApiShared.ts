@@ -91,6 +91,8 @@ export function assertMaskEditFileSize(label: string, bytes: number) {
 export const IMAGE_FETCH_CORS_HINT = ' 可点链接按钮复制结果链接，或尝试开启「返回 Base64 图片数据」避免此问题。'
 export const STREAMING_UNSUPPORTED_HINT = '提示：当前使用的 API 可能不支持流式传输，请尝试关闭「流式传输」功能。'
 export const STREAMING_FORMAT_HINT = '提示：API 返回了无法解析的流式数据格式，请尝试关闭「流式传输」功能。'
+const IMAGE_TOOL_DROPPED_ERROR = /Tool choice ['"]required['"] must be specified with ['"]tools['"] parameter\.?/i
+export const IMAGE_TOOL_DROPPED_HINT = '提示：当前 API 可能未正确转发图像生成工具，请换用支持该功能的接口或模型。'
 
 export function appendStreamingUnsupportedHint(message: string): string {
   return message ? `${message}\n${STREAMING_UNSUPPORTED_HINT}` : STREAMING_UNSUPPORTED_HINT
@@ -102,6 +104,9 @@ export function appendStreamingFormatHint(message: string): string {
 
 /** 排除明确与流式无关的状态码后追加提示 */
 export function maybeAppendStreamingHint(message: string, status: number, streamImages?: boolean): string {
+  if (IMAGE_TOOL_DROPPED_ERROR.test(message)) {
+    return message.includes(IMAGE_TOOL_DROPPED_HINT) ? message : `${message}\n${IMAGE_TOOL_DROPPED_HINT}`
+  }
   if (!streamImages) return message
   if (status === 401 || status === 403 || status === 404 || status === 408 || status === 429 || status >= 500) {
     return message
@@ -113,9 +118,12 @@ export const IMAGE_UNSAFE_ERROR_MESSAGE = '生成结果触发安全审核，请�
 export const THIRD_PARTY_SIMILARITY_ERROR_MESSAGE = '生成内容可能与第三方作品过于相似。'
 export const THIRD_PARTY_SIMILARITY_ERROR_HINT = '这不是账户或线路故障。请减少对具体作品、品牌角色或艺术家风格的直接复刻，并调整参考图或描述后重试。'
 export const RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_MESSAGE = '图片已生成，但图片域名未获允许。'
-export const RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_HINT = '请勿重复生成；请复制完整报错并提交工单，修复后可重新读取原任务。'
+export const RESULT_IMAGE_HOST_NOT_ALLOWED_ERROR_HINT = '请勿重复生成；请复制完整报错并提交工单。处理后可尝试重新读取原任务，原图链接失效时可能无法取回。'
+export const RESULT_IMAGE_DOWNLOAD_ERROR_MESSAGE = '图片已生成，但暂时未能取回。'
+export const RESULT_IMAGE_DOWNLOAD_ERROR_HINT = '请尝试「重新读取已有结果」，这只会读取原任务，不会重新生成。若原图链接已失效，请复制完整报错并提交工单。'
 export const UPSTREAM_NO_IMAGE_OUTPUT_ERROR_MESSAGE = '上游服务没有返回图片结果，请稍后重试或调整提示词。'
 export const INVALID_IMAGE_SIZE_ERROR_MESSAGE = '图片尺寸超出服务商限制，请改小尺寸后重试。'
+const CONTENT_POLICY_ERROR_MESSAGE = '本次请求被服务商的内容审核拒绝。\n提示：请调整提示词或参考图后再试；如认为判断有误，请复制完整报错并提交工单。'
 
 function payloadIncludes(value: unknown, pattern: RegExp): boolean {
   if (typeof value === 'string') return pattern.test(value)
@@ -167,6 +175,22 @@ function getFriendlyImageApiErrorDisplayMessage(message: string): string {
   if (normalizedMessage !== message) return normalizedMessage
 
   const cleanMessage = message.replace(/\s*\(request[_ -]?id\s*[:：][^)]+\)/gi, '').trim()
+  if (IMAGE_TOOL_DROPPED_ERROR.test(cleanMessage)) {
+    return `当前接口未能使用图像生成功能。\n${IMAGE_TOOL_DROPPED_HINT}`
+  }
+  // 先识别具体阶段与错误码，避免把取图 404、含糊的 400 误判成模型或内容问题。
+  if (/图片\s*(?:URL\s*|链接)?下载失败|生成结果图片读取失败|result_image_(?:download_failed|timeout)|图片 CDN 暂时不可访问/i.test(cleanMessage)) {
+    return '图片结果暂时未能取回。\n提示：请先查看原任务；如有「重新读取已有结果」，可尝试读取原图，避免重复生成。链接若已失效，请复制完整报错并提交工单。'
+  }
+  if (/no available (?:channel|compatible accounts)|no_available_channel|无可用渠道|暂无可用渠道|auth_not_found/i.test(cleanMessage)) {
+    return '当前模型暂时没有可用服务通道。\n提示：请稍后重试或切换其他图像模型；已有任务先查看结果，避免重复提交。持续失败时，请复制完整报错并提交工单。'
+  }
+  if (/invalid_image_format|couldn.t process this image/i.test(cleanMessage)) {
+    return '参考图无法被服务商读取。\n提示：请确认原图可以正常打开，重新导出为 PNG 或 JPEG 后上传；只修改文件扩展名不能转换图片格式。'
+  }
+  if (/\b(?:content_policy_violation|moderation_blocked|safety_violation)\b/i.test(cleanMessage)) {
+    return CONTENT_POLICY_ERROR_MESSAGE
+  }
   if (/signal is aborted|aborterror|operation was aborted|this operation was aborted/i.test(cleanMessage)) {
     return '本次生成已被中止。\n提示：请先检查任务记录和账户额度，确认没有生成成功后再重试，避免重复扣费。'
   }
@@ -191,8 +215,11 @@ function getFriendlyImageApiErrorDisplayMessage(message: string): string {
   if (/\b413\b|payload too large|request entity too large|content too large|图片过大|文件过大/i.test(cleanMessage)) {
     return '上传的图片过大。\n提示：请压缩图片或降低分辨率后再试。'
   }
-  if (/\b451\b|content policy|moderation|safety (?:check|policy)|内容审核|安全审核/i.test(cleanMessage)) {
-    return '提示词或参考图触发了安全审核。\n提示：请调整敏感内容、人物描述或参考图后再试。'
+  if (/\brequest_failed\b|may be due to.{0,100}(?:content policy|unknown issue)|可能.{0,100}(?:内容.{0,40}参数|参数.{0,40}未知)/i.test(cleanMessage)) {
+    return '服务商未能完成本次生成，具体原因尚不明确。\n提示：这条报错无法确认是内容审核还是服务异常。请先查看任务记录，确认没有结果后再尝试默认参数或其他模型；持续失败时，请复制完整报错并提交工单。'
+  }
+  if (/content policy violation|(?:blocked|rejected).{0,80}(?:content policy|safety)|(?:safety check|moderation).{0,30}(?:failed|blocked|rejected)|(?:触发|未通过).{0,12}(?:安全|内容)审核|(?:安全|内容)审核(?:未通过|失败|拒绝)/i.test(cleanMessage)) {
+    return CONTENT_POLICY_ERROR_MESSAGE
   }
   if (/\b408\b|\b504\b|gateway time-?out|request time-?out|timed out|timeout|deadline exceeded|请求超时/i.test(cleanMessage)) {
     return '生成等待时间过长，连接已超时。\n提示：请先检查任务记录和账户额度；确认没有生成成功后再重试，避免重复扣费。'
@@ -212,8 +239,11 @@ function getFriendlyImageApiErrorDisplayMessage(message: string): string {
   if (/\b500\b|internal server error|服务器内部错误/i.test(cleanMessage)) {
     return '图片服务暂时异常。\n提示：请稍后重试；如果多次失败，请复制完整报错并提交工单。'
   }
-  if (/\b400\b|\b409\b|\b422\b|invalid request|unsupported parameter|invalid parameter|参数错误|参数不支持/i.test(cleanMessage)) {
+  if (/unsupported parameter|invalid parameter|参数错误|参数不支持/i.test(cleanMessage)) {
     return '当前请求参数不被模型支持。\n提示：请恢复默认参数，或减少参考图后再试。'
+  }
+  if (/\b400\b|\b409\b|\b422\b|invalid request/i.test(cleanMessage)) {
+    return '服务商未接受本次请求。\n提示：请查看完整报错中的具体原因，可尝试默认参数或重新上传参考图；仍然失败时，请提交工单。'
   }
   if (/invalid json|unexpected token|无法解析|无法识别.{0,8}(?:响应|数据)/i.test(cleanMessage)) {
     return '服务返回了无法识别的数据。\n提示：请复制完整报错并提交工单，方便客服排查。'
@@ -296,6 +326,11 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
     else if (errJson.message) errorMsg = errJson.message
     if (payloadIncludes(errJson, /\bimage_unsafe\b|generated images appear to be unsafe/i)) {
       return IMAGE_UNSAFE_ERROR_MESSAGE
+    }
+    const code = errJson.error?.code ?? errJson.error_code ?? errJson.code
+    // 保留结构化错误码供界面判断，完整原文仍可复制给客服。
+    if (typeof code === 'string' && code && typeof errorMsg === 'string' && !errorMsg.includes(code)) {
+      errorMsg = `${code}: ${errorMsg}`
     }
   } catch {
     try {
