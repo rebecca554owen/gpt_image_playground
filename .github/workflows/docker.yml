@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: ['main']
   workflow_dispatch:
+    inputs:
+      use_github_hosted:
+        description: '本次改用 GitHub 托管构建机（须经维护者批准）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,7 +23,7 @@ concurrency:
 jobs:
   validate:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, ci-vps]
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.use_github_hosted && '["ubuntu-latest"]' || '["self-hosted","ci-vps"]') }}
     permissions:
       contents: read
     steps:
@@ -55,7 +60,7 @@ jobs:
   publish:
     if: github.event_name != 'pull_request'
     needs: validate
-    runs-on: [self-hosted, ci-vps]
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.use_github_hosted && '["ubuntu-latest"]' || '["self-hosted","ci-vps"]') }}
     permissions:
       contents: read
       packages: write

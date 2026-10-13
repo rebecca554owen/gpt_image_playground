@@ -1167,9 +1167,10 @@ test('Service Worker 不缓存任务与代理接口并强制检查新版本', ()
 test('Docker workflow 隔离只读 PR 校验与 GHCR 发布权限', () => {
   const workflow = readFileSync(path.join(process.cwd(), '.github/workflows/docker.yml'), 'utf8')
   assert.match(workflow, /pull_request:\n\s+branches: \['main'\]/)
-  assert.match(workflow, /validate:\n\s+if: github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.head\.repo\.full_name == github\.repository\n\s+runs-on: \[self-hosted, ci-vps\]\n\s+permissions:\n\s+contents: read/)
-  assert.equal((workflow.match(/runs-on: \[self-hosted, ci-vps\]/g) ?? []).length, 2)
-  assert.doesNotMatch(workflow, /runs-on: ubuntu-latest/)
+  assert.match(workflow, /validate:\n\s+if: github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.head\.repo\.full_name == github\.repository\n\s+runs-on: [^\n]+\n\s+permissions:\n\s+contents: read/)
+  assert.match(workflow, /use_github_hosted:\n\s+description: [^\n]+\n\s+type: boolean\n\s+default: false/)
+  const runnerSelection = `runs-on: \${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.use_github_hosted && '["ubuntu-latest"]' || '["self-hosted","ci-vps"]') }}`
+  assert.equal(workflow.split(runnerSelection).length - 1, 2)
   assert.match(workflow, /publish:\n\s+if: github\.event_name != 'pull_request'\n\s+needs: validate/)
   assert.equal((workflow.match(/packages: write/g) ?? []).length, 1)
   assert.doesNotMatch(workflow, /docker\/setup-qemu-action@v3/)
