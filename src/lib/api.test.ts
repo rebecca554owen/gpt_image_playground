@@ -848,6 +848,24 @@ describe('callImageApi', () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/result-images/'))).toBe(false)
   })
 
+  it('retrieves the final URL of a stored image edit stream without submitting generation again', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      expect(init?.method).not.toBe('PUT')
+      const url = String(input)
+      expect(url.startsWith('https://oss-us.dimenoss.com/')).toBe(false)
+      if (url.endsWith('/result-images/0')) return new Response(new Uint8Array([112, 110, 103]), { headers: { 'Content-Type': 'image/png' } })
+      if (url.endsWith('/result')) return new Response('event: image_edit.completed\ndata: {"type":"image_edit.completed","url":"https://oss-us.dimenoss.com/signed-result.png"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } })
+      return Response.json({ id: 'edit-stream-job', status: 'succeeded', hasResult: true })
+    })
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: '', apiMode: 'images', streamImages: false },
+      prompt: 'edit', params: DEFAULT_PARAMS, inputImageDataUrls: [],
+      serverImageJobs: [{ jobId: 'edit-stream-job', token: 'edit-stream-token', requestIndex: 0 }],
+    })
+    expect(result.images).toEqual(['data:image/png;base64,cG5n'])
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/result-images/0'))).toHaveLength(1)
+  })
+
   it('stops automatic recovery when a completed Responses stream has no image result', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       if (String(input).endsWith('/result')) {

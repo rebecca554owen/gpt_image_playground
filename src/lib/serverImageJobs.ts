@@ -26,7 +26,7 @@ const SERVER_JOB_ERROR_MESSAGES: Record<string, string> = {
   body_too_large: '请求内容过大，任务尚未提交到上游。请减少参考图数量或图片大小后重试。',
   disk_watermark_reached: '任务服务存储空间不足，任务尚未提交到上游，请稍后重试。',
   invalid_task_token: '服务端任务的本地查询凭证无效。为避免重复扣费，本站不会自动重新提交。',
-  ip_active_limit_reached: '当前设备正在生成的任务较多，请等待已有任务完成后再试。',
+  ip_active_limit_reached: '当前网络出口的未完成任务已达上限（同一网络下的不同设备和 API Key 共用名额）。请等待已有任务完成后再试。',
   job_waiter_limit_reached: '同一任务的查询连接过多，请稍后继续查看任务结果。',
   key_active_limit_reached: '当前 API Key 正在生成的任务较多，请等待已有任务完成后再试。',
   outcome_unknown_after_restart: '任务服务重启后无法确认上游最终结果，任务可能已经产生扣费。本站不会自动重试，请先检查账户记录。',

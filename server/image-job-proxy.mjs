@@ -28,7 +28,7 @@ const ENCRYPTED_FILE_HEADER_BYTES = ENCRYPTED_FILE_HEADER.length + 12
 const AUTH_TAG_BYTES = 16
 const RESULT_IMAGE_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const MAX_RESULT_IMAGE_REDIRECTS = 4
-const MAX_RESULT_IMAGE_JSON_BYTES = 64 * 1024 * 1024
+const MAX_RESULT_IMAGE_PAYLOAD_BYTES = 64 * 1024 * 1024
 
 class HttpError extends Error {
   constructor(status, code) {
@@ -277,7 +277,7 @@ const createDecryptedStream = (file, key) => {
   }).pipe(decipher)
 }
 
-const readEncryptedJson = async (file, key, maxBytes = 64 * 1024) => {
+const readEncryptedText = async (file, key, maxBytes = 64 * 1024) => {
   const chunks = []
   let size = 0
   for await (const chunk of createDecryptedStream(file, key)) {
@@ -285,7 +285,40 @@ const readEncryptedJson = async (file, key, maxBytes = 64 * 1024) => {
     if (size > maxBytes) throw new Error('encrypted metadata is too large')
     chunks.push(chunk)
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+const readEncryptedJson = async (file, key, maxBytes) => JSON.parse(await readEncryptedText(file, key, maxBytes))
+
+// 与网页保持一致：优先完整结果事件，否则按最终图片事件顺序取图，忽略预览图和心跳。
+const parseStoredImageStream = (text) => {
+  const completed = []
+  let result = null
+  for (const block of text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n\n')) {
+    const data = []
+    let eventType = ''
+    for (const line of block.split('\n')) {
+      if (line.startsWith(':')) continue
+      const colon = line.indexOf(':')
+      const field = colon < 0 ? line : line.slice(0, colon)
+      const value = colon < 0 ? '' : line.slice(colon + 1).replace(/^ /, '')
+      if (field === 'data') data.push(value)
+      if (field === 'event') eventType = value
+    }
+    const value = data.join('\n')
+    if (!value || value.trim() === '[DONE]') continue
+    let event
+    try { event = JSON.parse(value) } catch { throw new HttpError(502, 'result_image_not_available') }
+    if (!event || typeof event !== 'object' || Array.isArray(event)) continue
+    const type = typeof event.type === 'string' ? event.type : eventType
+    if (event.error || type === 'error' || type === 'response.failed') throw new HttpError(502, 'result_image_not_available')
+    if (event.object === 'image.generation.result' || event.object === 'image.edit.result') {
+      result = event
+    } else if (type === 'image_generation.completed' || type === 'image_edit.completed') {
+      completed.push(event)
+    }
+  }
+  return result ?? { data: completed }
 }
 
 const removeFile = (file) => {
@@ -677,8 +710,11 @@ export const createImageJobProxy = (options = {}) => {
       if (!row.result_file || !row.result_meta_file) throw new HttpError(409, 'result_not_available')
       const meta = await readEncryptedJson(row.result_meta_file, key)
       imageLog.upstreamRequestId = meta.upstreamRequestId
-      if (!String(meta.contentType || '').toLowerCase().includes('json')) throw new HttpError(404, 'result_image_not_available')
-      const payload = await readEncryptedJson(row.result_file, key, Math.min(config.maxResultBytes, MAX_RESULT_IMAGE_JSON_BYTES))
+      const contentType = String(meta.contentType || '').toLowerCase()
+      const isStream = contentType.includes('text/event-stream')
+      if (!isStream && !contentType.includes('json')) throw new HttpError(404, 'result_image_not_available')
+      const text = await readEncryptedText(row.result_file, key, Math.min(config.maxResultBytes, MAX_RESULT_IMAGE_PAYLOAD_BYTES))
+      const payload = isStream ? parseStoredImageStream(text) : JSON.parse(text)
       const dataUrl = payload?.data?.[imageIndex]?.url
       const topLevelUrl = imageIndex === 0 ? payload?.url : null
       const imageUrl = typeof dataUrl === 'string' ? dataUrl : topLevelUrl

@@ -573,6 +573,108 @@ test('顶层 URL 与超过 1MB 的 Base64 同时返回时仍可下载原图', as
   assert.deepEqual(Buffer.from(await result.arrayBuffer()), expected)
 })
 
+test('流式生图与编辑最终 URL 可从原任务下载，预览不占最终索引且不会重新生成', async () => {
+  let generationCalls = 0
+  let imageCalls = 0
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url?.startsWith('/final-')) {
+      imageCalls += 1
+      res.writeHead(200, { 'content-type': 'image/png' })
+      res.end(req.url)
+      return
+    }
+    generationCalls += 1
+    await readRequest(req)
+    const base = `http://127.0.0.1:${req.socket.localPort}`
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+    res.end([
+      '\uFEFF: heartbeat', '',
+      'data: {"type":"image_edit.partial_image","url":"http://forbidden.example/preview.png"}', '',
+      'event: image_edit.completed',
+      'data: {"type":"image_edit.completed",',
+      `data: "url":"${base}/final-0.png"}`, '',
+      'event: image_generation.completed',
+      `data: {"url":"${base}/final-1.png"}`, '',
+      'data: [DONE]', '', '',
+    ].join('\r\n'))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  const id = randomUUID()
+  const token = randomUUID()
+  await putJob(fixture, { id, token, upstreamPath: 'images/edits' })
+  await waitForTerminal(fixture, id, token)
+  const readImage = (index, credential = token) => fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/${index}`, { headers: { 'x-task-token': credential } })
+  assert.equal((await readImage(0, 'incorrect-task-token')).status, 403)
+  assert.equal(imageCalls, 0)
+  for (const index of [0, 1, 0]) {
+    const response = await readImage(index)
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), `/final-${index}.png`)
+  }
+  assert.equal((await readImage(2)).status, 404)
+  assert.equal(generationCalls, 1)
+  assert.equal(imageCalls, 2)
+  assert.equal(JSON.stringify(fixture.logs).includes('/final-0.png'), false)
+})
+
+test('流式完整结果优先于单张完成事件，保留混合 Base64/URL 的索引', async () => {
+  const fixture = await createFixture(async (req, res) => {
+    if (req.url === '/final.png') {
+      res.writeHead(200, { 'content-type': 'image/png' })
+      res.end('final-image')
+      return
+    }
+    await readRequest(req)
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.end([
+      'data: {"type":"image_generation.completed","url":"http://forbidden.example/obsolete.png"}', '',
+      `data: ${JSON.stringify({ object: 'image.generation.result', data: [{ b64_json: 'base64' }, { url: `http://127.0.0.1:${req.socket.localPort}/final.png` }] })}`, '', '',
+    ].join('\n'))
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  const id = randomUUID()
+  const token = randomUUID()
+  await putJob(fixture, { id, token })
+  await waitForTerminal(fixture, id, token)
+  const result = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/1`, { headers: { 'x-task-token': token } })
+  assert.equal(result.status, 200)
+  assert.equal(await result.text(), 'final-image')
+})
+
+test('流式取图仍拒绝未完成、非法流、上游错误和未授权域名', async () => {
+  let downloads = 0
+  const fixture = await createFixture(async (req, res) => {
+    if (req.method === 'GET') {
+      downloads += 1
+      res.end('should not fetch')
+      return
+    }
+    const { prompt } = JSON.parse((await readRequest(req)).toString())
+    const url = `http://127.0.0.1:${req.socket.localPort}/image.png`
+    const streams = {
+      partial: `data: ${JSON.stringify({ type: 'image_edit.partial_image', url })}\n\n`,
+      malformed: 'data: {not-json}\n\n',
+      error: `data: ${JSON.stringify({ type: 'image_edit.completed', url })}\n\ndata: {"type":"error","error":{"code":"request_failed"}}\n\n`,
+      forbidden: 'data: {"type":"image_edit.completed","url":"http://localhost/private"}\n\n',
+    }
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.end(streams[prompt])
+  }, { IMAGE_JOB_RESULT_IMAGE_HOSTS: '127.0.0.1' })
+  for (const [prompt, status, code] of [
+    ['partial', 404, 'result_image_not_available'],
+    ['malformed', 502, 'result_image_not_available'],
+    ['error', 502, 'result_image_not_available'],
+    ['forbidden', 502, 'result_image_host_not_allowed'],
+  ]) {
+    const id = randomUUID()
+    const token = randomUUID()
+    await putJob(fixture, { id, token, body: JSON.stringify({ prompt }) })
+    await waitForTerminal(fixture, id, token)
+    const result = await fetch(`${fixture.baseUrl}/v1/jobs/${id}/result-images/0`, { headers: { 'x-task-token': token } })
+    assert.equal(result.status, status)
+    assert.deepEqual(await result.json(), { error: code })
+  }
+  assert.equal(downloads, 0)
+})
+
 test('图片 CDN 压缩响应按解压后的真实图片长度缓存和交付', async () => {
   const expected = Buffer.from('compressed-image-content'.repeat(100))
   const compressed = gzipSync(expected)
@@ -666,6 +768,10 @@ test('结果图片域名仅匹配精确主机或配置的子域后缀', () => {
   const compose = readFileSync(path.join(process.cwd(), 'deploy/docker-compose.image-jobs.yml'), 'utf8')
   const rules = new Set(compose.match(/IMAGE_JOB_RESULT_IMAGE_HOSTS: ([^\n]+)/)[1].split(','))
   assert.equal(isAllowedResultImageHost('imagefil.scdn.app', rules), true)
+  assert.equal(isAllowedResultImageHost('oss-us.dimenoss.com', rules), true)
+  for (const host of ['dimenoss.com', 'oss-eu.dimenoss.com', 'fakeoss-us.dimenoss.com', 'oss-us.dimenoss.com.evil.example']) {
+    assert.equal(isAllowedResultImageHost(host, rules), false)
+  }
   assert.equal(isAllowedResultImageHost('cdn.000000033.xyz', rules), true)
   assert.equal(isAllowedResultImageHost('ztyunjuan.com', rules), true)
   assert.equal(isAllowedResultImageHost('image.klong.lat', rules), true)
